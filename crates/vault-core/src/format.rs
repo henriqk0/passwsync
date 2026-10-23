@@ -64,6 +64,13 @@ impl Header {
     }
 }
 
+/// Parses only the header fields needed to budget memory before unlocking: the same parse
+/// steps as `unlock` up to KDF parameter validation. Never touches a password, key, or the
+/// ciphertext. The values are untrusted until `unlock` authenticates the header as AAD.
+pub fn peek_kdf_config(bytes: &[u8]) -> Result<KdfConfig, VaultError> {
+    Header::parse(bytes).map(|header| header.kdf)
+}
+
 fn u32_at(bytes: &[u8], offset: usize) -> u32 {
     u32::from_le_bytes(bytes[offset..offset + 4].try_into().expect("4-byte slice"))
 }

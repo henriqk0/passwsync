@@ -102,6 +102,21 @@ impl Entry {
         self.record_change(device, now);
     }
 
+    /// The record this entry becomes after a change by `device` at `now`, leaving `self`
+    /// untouched so a caller can put it back if persisting the change fails.
+    pub(crate) fn successor(&self, state: EntryState, device: &DeviceId, now: Timestamp) -> Self {
+        let mut next = Self {
+            id: self.id,
+            created_at: self.created_at,
+            modified_at: self.modified_at,
+            last_modified_by: self.last_modified_by.clone(),
+            version: self.version.clone(),
+            state,
+        };
+        next.record_change(device, now);
+        next
+    }
+
     fn record_change(&mut self, device: &DeviceId, now: Timestamp) {
         self.modified_at = now;
         self.last_modified_by = device.clone();

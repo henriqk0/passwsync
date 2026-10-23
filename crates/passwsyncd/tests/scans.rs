@@ -1,0 +1,180 @@
+//! SC-006, FR-012, FR-032, FR-033, FR-033a: no secrets in outputs, no external assets.
+
+mod common;
+
+use std::fs;
+use std::path::Path;
+
+use common::server::TestServer;
+use passwsyncd::assets;
+
+const MARKER: &str = "MARKER-scan";
+
+fn files_under(dir: &Path, out: &mut Vec<(String, Vec<u8>)>) {
+    let Ok(items) = fs::read_dir(dir) else { return };
+    for item in items.flatten() {
+        let path = item.path();
+        if path.is_dir() {
+            files_under(&path, out);
+        } else if let Ok(bytes) = fs::read(&path) {
+            out.push((path.display().to_string(), bytes));
+        }
+    }
+}
+
+fn contains(haystack: &[u8], needle: &str) -> bool {
+    haystack
+        .windows(needle.len())
+        .any(|w| w == needle.as_bytes())
+}
+
+pub fn assert_no_marker(server: &TestServer, marker: &str) {
+    let log = server.log_text();
+    assert!(!log.contains(marker), "log leaks: {log}");
+    let mut files = Vec::new();
+    files_under(&server.fx.runtime_dir, &mut files);
+    files_under(&server.fx.config_dir, &mut files);
+    for (path, bytes) in files {
+        assert!(!contains(&bytes, marker), "{path} leaks");
+    }
+}
+
+#[test]
+fn rejected_and_accepted_requests_never_log_request_data() {
+    let server = TestServer::start();
+    let s = server.login();
+    let marker_cookie = format!("pws_session={MARKER}");
+    let _ = server.send(
+        "GET",
+        &format!("/{MARKER}"),
+        &[("Cookie", &marker_cookie)],
+        b"",
+    );
+    let _ = server.send(
+        "GET",
+        &format!("/api/{MARKER}?q={MARKER}"),
+        &[("X-CSRF-Token", MARKER)],
+        b"",
+    );
+    let _ = server.raw(format!("GET / HTTP/1.1\r\nHost: {MARKER}\r\n\r\n").as_bytes());
+    let _ = server.api(
+        &s,
+        "POST",
+        "/api/lock-all",
+        Some(&format!("{{\"x\":\"{MARKER}\"}}")),
+    );
+    assert_no_marker(&server, MARKER);
+    let log = server.log_text();
+    assert!(
+        !log.contains(&s.cookie) && !log.contains(&s.csrf),
+        "tokens never logged"
+    );
+}
+
+#[test]
+fn launch_file_holds_only_the_url() {
+    let server = TestServer::start();
+    let text = server.launch_url();
+    let prefix = format!("http://127.0.0.1:{}/launch/", server.port);
+    let token = text
+        .strip_prefix(&prefix)
+        .unwrap()
+        .strip_suffix('\n')
+        .unwrap();
+    assert_eq!(token.len(), 64);
+    let entries: Vec<_> = fs::read_dir(&server.fx.runtime_dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    let mut entries = entries;
+    entries.sort();
+    assert_eq!(entries, ["instance.lock", "launch-url"]);
+    assert!(
+        fs::read(server.fx.runtime_dir.join("instance.lock"))
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn embedded_assets_reference_nothing_outside_the_service() {
+    assert!(!assets::ALL.is_empty());
+    for (name, bytes) in assets::ALL {
+        // The SVG namespace URI is an identifier the browser never fetches.
+        let text = String::from_utf8_lossy(bytes)
+            .to_ascii_lowercase()
+            .replace("xmlns=\"http://www.w3.org/2000/svg\"", "");
+        for banned in [
+            "http://",
+            "https://",
+            "@import",
+            "src=\"//",
+            "href=\"//",
+            "url(//",
+            "url(http",
+            "ws://",
+            "wss://",
+        ] {
+            assert!(!text.contains(banned), "{name} contains {banned}");
+        }
+    }
+}
+
+#[test]
+fn end_to_end_flow_leaks_no_marker_to_logs_runtime_or_config() {
+    use serde_json::json;
+    let mut server = TestServer::start();
+    let s = server.login();
+    let pw = "MARKER-pw-master-secret";
+    let create = json!({"name": "Personal", "password": pw, "password_confirm": pw});
+    assert_eq!(
+        server
+            .api(&s, "POST", "/api/wallets", Some(&create.to_string()))
+            .status,
+        201
+    );
+    let entry = json!({
+        "title": "MARKER-title", "username": "MARKER-user", "password": "MARKER-entry-pw",
+        "url": "https://MARKER.example", "notes": "MARKER-notes"
+    });
+    let resp = server.api(
+        &s,
+        "POST",
+        "/api/wallets/Personal/entries",
+        Some(&entry.to_string()),
+    );
+    let id = resp.json()["id"].as_str().unwrap().to_string();
+    let field = format!("/api/wallets/Personal/entries/{id}/field");
+    let copied = server.api(&s, "POST", &field, Some("{\"field\":\"password\"}"));
+    assert_eq!(copied.json()["value"], "MARKER-entry-pw");
+    server.api(
+        &s,
+        "POST",
+        "/api/wallets/Personal/search",
+        Some("{\"query\":\"MARKER\"}"),
+    );
+    server.api(
+        &s,
+        "GET",
+        &format!("/api/wallets/Personal/entries/{id}"),
+        None,
+    );
+    server.api(&s, "POST", "/api/wallets/Personal/lock", None);
+    let wrong = json!({"password": "MARKER-wrong-pw"}).to_string();
+    server.api(&s, "POST", "/api/wallets/Personal/unlock", Some(&wrong));
+    let right = json!({"password": pw}).to_string();
+    server.api(&s, "POST", "/api/wallets/Personal/unlock", Some(&right));
+    server.api(&s, "POST", "/api/lock-all", None);
+    let fx = std::mem::replace(&mut server.fx, common::server::Fixture::new(""));
+    server.stop();
+    let restarted = TestServer::start_in(fx);
+    let s2 = restarted.login();
+    restarted.api(&s2, "POST", "/api/wallets/Personal/unlock", Some(&right));
+    assert!(!server.log_text().contains("MARKER"), "first run log leaks");
+    assert_no_marker(&restarted, "MARKER");
+    let log = server.log_text() + &restarted.log_text();
+    assert!(log.contains("unlocked Personal") && log.contains("locked Personal (manual)"));
+    // The wallet file itself is encrypted.
+    let bytes = fs::read(restarted.fx.wallets_dir.join("Personal.pwsw")).unwrap();
+    assert!(!contains(&bytes, "MARKER"));
+}

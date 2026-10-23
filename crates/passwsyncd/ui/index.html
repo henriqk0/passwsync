@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="csrf-token" content="{{CSRF_TOKEN}}">
+<title>passwsync</title>
+<link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/static/app.css">
+<script src="/static/app.js" defer></script>
+</head>
+<body>
+<header class="bar">
+  <h1>passwsync</h1>
+  <button id="lock-all" type="button" class="secondary">Lock all wallets</button>
+</header>
+<p id="status" class="status" role="status" aria-live="polite"></p>
+<main class="layout">
+  <section class="panel" aria-labelledby="wallets-heading">
+    <h2 id="wallets-heading">Wallets</h2>
+    <ul id="wallet-list" class="wallet-list"></ul>
+    <form id="create-wallet-form" class="stack" autocomplete="off">
+      <h3>Create a wallet</h3>
+      <label for="create-name">Name</label>
+      <input id="create-name" type="text" maxlength="64" required>
+      <label for="create-password">Master password (at least 12 characters)</label>
+      <input id="create-password" type="password" minlength="12" required autocomplete="new-password">
+      <label for="create-password-confirm">Repeat master password</label>
+      <input id="create-password-confirm" type="password" minlength="12" required autocomplete="new-password">
+      <button type="submit">Create wallet</button>
+    </form>
+  </section>
+  <section id="wallet-view" class="panel" aria-labelledby="wallet-title" hidden>
+    <div class="row heading">
+      <h2 id="wallet-title"></h2>
+      <button id="lock-wallet" type="button" class="secondary">Lock</button>
+    </div>
+    <form id="unlock-form" class="stack" autocomplete="off">
+      <h3>Unlock</h3>
+      <label for="unlock-password">Master password</label>
+      <input id="unlock-password" type="password" required autocomplete="current-password">
+      <button type="submit">Unlock</button>
+    </form>
+    <div id="unlocked-view">
+    <form id="search-form" class="row" role="search" autocomplete="off">
+      <label for="search-query">Search</label>
+      <input id="search-query" type="search" placeholder="title, username, URL or notes">
+      <button type="submit">Search</button>
+    </form>
+    <ul id="entry-list" class="entry-list" aria-label="Credentials"></ul>
+    <section id="entry-details" class="details" aria-labelledby="details-title" hidden>
+      <h3 id="details-title" tabindex="-1"></h3>
+      <dl class="fields">
+        <dt>Username</dt><dd id="details-username"></dd>
+        <dt>URL</dt><dd id="details-url"></dd>
+        <dt>Notes</dt><dd id="details-notes" class="notes"></dd>
+        <dt>Modified</dt><dd id="details-modified"></dd>
+        <dt>Password</dt><dd><code id="revealed-password" class="secret" aria-live="polite"></code></dd>
+      </dl>
+      <div class="row">
+        <button id="copy-username" type="button" class="secondary">Copy username</button>
+        <button id="copy-password" type="button">Copy password</button>
+        <button id="reveal-password" type="button" class="secondary" aria-pressed="false">Reveal password</button>
+      </div>
+      <p id="clipboard-countdown" class="countdown" role="status" hidden></p>
+      <p class="muted small">Copied values are cleared from the clipboard automatically, but only while this page stays open.</p>
+      <form id="edit-entry-form" class="stack" autocomplete="off">
+        <h4>Edit</h4>
+        <label for="edit-title">Title</label>
+        <input id="edit-title" type="text" required>
+        <label for="edit-username">Username</label>
+        <input id="edit-username" type="text">
+        <label for="edit-password">New password (leave empty to keep the current one)</label>
+        <input id="edit-password" type="password" autocomplete="new-password">
+        <label for="edit-url">URL</label>
+        <input id="edit-url" type="text">
+        <label for="edit-notes">Notes</label>
+        <textarea id="edit-notes" rows="3"></textarea>
+        <div class="row">
+          <button type="submit">Save changes</button>
+          <button id="delete-entry" type="button" class="danger">Delete credential</button>
+          <button id="close-details" type="button" class="secondary">Close</button>
+        </div>
+      </form>
+    </section>
+    <form id="add-entry-form" class="stack" autocomplete="off">
+      <h3>Add a credential</h3>
+      <label for="entry-title">Title</label>
+      <input id="entry-title" type="text" required>
+      <label for="entry-username">Username</label>
+      <input id="entry-username" type="text">
+      <label for="entry-password">Password</label>
+      <input id="entry-password" type="password" autocomplete="new-password">
+      <label for="entry-url">URL</label>
+      <input id="entry-url" type="text">
+      <label for="entry-notes">Notes</label>
+      <textarea id="entry-notes" rows="3"></textarea>
+      <button type="submit">Add credential</button>
+    </form>
+    </div>
+  </section>
+</main>
+</body>
+</html>

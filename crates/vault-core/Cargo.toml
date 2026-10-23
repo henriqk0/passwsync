@@ -24,3 +24,7 @@ required-features = ["testkit"]
 
 [lints]
 workspace = true
+
+[[test]]
+name = "saved_mutations"
+required-features = ["testkit"]
