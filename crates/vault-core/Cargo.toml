@@ -1,0 +1,26 @@
+[package]
+name = "vault-core"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+testkit = []
+
+[dependencies]
+argon2 = { version = "0.5", features = ["zeroize"] }
+aes-gcm = { version = "0.10", features = ["zeroize"] }
+zeroize = { version = "1", features = ["derive"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
+serde = { version = "1", features = ["derive"] }
+postcard = { version = "1", features = ["alloc"] }
+unicode-normalization = "0.1"
+thiserror = "2"
+
+[[test]]
+name = "storage_memory"
+required-features = ["testkit"]
+
+[lints]
+workspace = true
