@@ -1,0 +1,23 @@
+[package]
+name = "wallet-service"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Application layer for passwsync hosts: wallet registry, sessions, auto-lock (no I/O)"
+
+[features]
+testkit = ["vault-core/testkit"]
+
+[dependencies]
+vault-core = { path = "../vault-core" }
+zeroize = { version = "1", features = ["derive"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
+subtle = { workspace = true }
+
+[dev-dependencies]
+wallet-service = { path = ".", features = ["testkit"] }
+vault-core = { path = "../vault-core", features = ["testkit"] }
+
+[lints]
+workspace = true

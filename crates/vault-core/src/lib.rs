@@ -40,6 +40,7 @@ mod version;
 pub use clock::{Clock, FixedClock, SystemClock};
 pub use entry::{Entry, EntryFields};
 pub use error::{StorageError, VaultError};
+pub use format::peek_kdf_config;
 pub use ids::{DeviceId, EntryId, WalletId};
 pub use kdf::KdfConfig;
 pub use secret::{MasterPassword, VaultKey};

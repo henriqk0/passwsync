@@ -2,6 +2,7 @@ use std::fmt;
 
 use zeroize::Zeroizing;
 
+use crate::entry::EntryState;
 use crate::format::{self, PayloadRef};
 use crate::kdf::{derive_key, random_salt};
 use crate::{
@@ -145,6 +146,70 @@ impl Vault {
     pub fn delete_entry(&mut self, id: EntryId) -> Result<(), VaultError> {
         let now = self.clock.now();
         Self::live_entry_mut(&mut self.entries, id)?.mark_deleted(&self.device, now);
+        Ok(())
+    }
+
+    /// Adds an entry and saves; if the save fails the entry is removed again (no tombstone)
+    /// and the storage error is returned.
+    pub fn add_entry_saved(
+        &mut self,
+        fields: EntryFields,
+        storage: &mut dyn VaultStorage,
+    ) -> Result<EntryId, VaultError> {
+        let entry = Entry::new_live(fields, &self.device, self.clock.now())?;
+        let id = entry.id();
+        self.entries.push(entry);
+        if let Err(error) = self.save(storage) {
+            self.entries.pop();
+            return Err(error);
+        }
+        Ok(id)
+    }
+
+    /// Replaces an entry's fields and saves; if the save fails the previous record (fields,
+    /// timestamps, device, version vector) is put back exactly.
+    pub fn update_entry_saved(
+        &mut self,
+        id: EntryId,
+        fields: EntryFields,
+        storage: &mut dyn VaultStorage,
+    ) -> Result<(), VaultError> {
+        fields.validate()?;
+        self.replace_saved(id, EntryState::Live(fields), storage)
+    }
+
+    /// Deletes an entry (tombstone) and saves; if the save fails the live record is put back
+    /// exactly.
+    pub fn delete_entry_saved(
+        &mut self,
+        id: EntryId,
+        storage: &mut dyn VaultStorage,
+    ) -> Result<(), VaultError> {
+        let now = self.clock.now();
+        self.replace_saved(id, EntryState::Deleted { deleted_at: now }, storage)
+    }
+
+    /// Swaps the live record `id` for its successor in `state`, saves, and swaps the old
+    /// record back on failure. The old record is moved aside, never copied; whichever record
+    /// is dropped wipes its fields.
+    fn replace_saved(
+        &mut self,
+        id: EntryId,
+        state: EntryState,
+        storage: &mut dyn VaultStorage,
+    ) -> Result<(), VaultError> {
+        let now = self.clock.now();
+        let index = self
+            .entries
+            .iter()
+            .position(|entry| entry.id() == id && !entry.is_deleted())
+            .ok_or(VaultError::EntryNotFound)?;
+        let next = self.entries[index].successor(state, &self.device, now);
+        let previous = std::mem::replace(&mut self.entries[index], next);
+        if let Err(error) = self.save(storage) {
+            self.entries[index] = previous;
+            return Err(error);
+        }
         Ok(())
     }
 

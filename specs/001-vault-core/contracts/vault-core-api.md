@@ -71,6 +71,10 @@ impl KdfConfig {
     pub const DEFAULT: KdfConfig;   // 65_536 KiB, 12, 1  (tuned for SC-003)
     pub const MINIMUM: KdfConfig;   // 19_456 KiB, 2, 1   (used by tests)
 }
+
+/// Added by feature 002: same parse steps as `unlock` up to KDF parameter validation; never
+/// needs the password. Values are untrusted until `unlock` authenticates the header.
+pub fn peek_kdf_config(bytes: &[u8]) -> Result<KdfConfig, VaultError>;
 ```
 
 ### Vault (unlocked wallet)
@@ -99,6 +103,14 @@ impl Vault {
     pub fn update_entry(&mut self, id: EntryId, fields: EntryFields) -> Result<(), VaultError>;
     pub fn delete_entry(&mut self, id: EntryId) -> Result<(), VaultError>;
 
+    // Added by feature 002: mutate, save, and restore the exact previous record on save failure.
+    pub fn add_entry_saved(&mut self, fields: EntryFields, storage: &mut dyn VaultStorage)
+        -> Result<EntryId, VaultError>;
+    pub fn update_entry_saved(&mut self, id: EntryId, fields: EntryFields,
+                              storage: &mut dyn VaultStorage) -> Result<(), VaultError>;
+    pub fn delete_entry_saved(&mut self, id: EntryId, storage: &mut dyn VaultStorage)
+        -> Result<(), VaultError>;
+
     pub fn get(&self, id: EntryId) -> Option<&Entry>;              // live entries only
     pub fn list(&self) -> Vec<&Entry>;                             // live, sorted by title (ci), then id
     pub fn search(&self, query: &str) -> Vec<&Entry>;              // ci substring: title/username/url/notes
@@ -121,6 +133,11 @@ Behavioral rules:
 - `unlock`/`open` need only the wallet bytes and its master password; the `device` argument
   is an opaque change-tracking tag, so a wallet from another device opens identically
   (FR-005b). After unlock, `save` never asks for the password again (FR-005a).
+- `*_saved` (feature 002): validation errors return before anything changes; on success the
+  vault equals the unsaved variant followed by `save`; if `save` fails the affected record is
+  restored exactly (fields, timestamps, `last_modified_by`, version vector; an added entry is
+  removed with no tombstone) and the storage error is returned. The previous record is moved
+  aside, never copied, and its fields are wiped when dropped.
 - Auto-lock: the host application enforces timeouts by calling `lock` (or dropping the
   `Vault`); the core has no timer.
 - A locked wallet is represented only by bytes; there is no "locked `Vault`" value, so
@@ -165,6 +182,9 @@ An adapter instance is bound to one wallet location (file path for the file adap
 pub mod testkit {
     /// Runs the shared storage behavior suite; `make` returns a fresh, empty storage.
     pub fn storage_contract<S: VaultStorage>(make: impl Fn() -> S);
+    /// Added by feature 002: memory storage whose `store` fails on demand
+    /// (`new`, `with_switch(Arc<AtomicBool>)`, `set_failing`, `switch`).
+    pub struct FailingStorage;
 }
 ```
 
