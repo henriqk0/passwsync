@@ -1,0 +1,15 @@
+[package]
+name = "vault-storage-file"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+vault-core = { path = "../vault-core" }
+
+[dev-dependencies]
+vault-core = { path = "../vault-core", features = ["testkit"] }
+
+[lints]
+workspace = true
