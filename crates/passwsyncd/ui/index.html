@@ -100,5 +100,63 @@
     </div>
   </section>
 </main>
+<main class="devices">
+  <section id="devices-view" class="panel" aria-labelledby="devices-heading">
+    <h2 id="devices-heading">Devices</h2>
+    <section aria-labelledby="this-device-heading">
+      <h3 id="this-device-heading">This device</h3>
+      <dl class="fields">
+        <dt>Name</dt><dd id="this-device-name"></dd>
+        <dt>Fingerprint</dt><dd><code id="this-device-fingerprint" class="fingerprint"></code></dd>
+        <dt>Network</dt><dd id="network-state"></dd>
+        <dt>Interfaces</dt><dd id="network-interfaces"></dd>
+        <dt>Settings</dt><dd id="network-settings" class="muted small"></dd>
+      </dl>
+      <p class="muted small">Networking is turned on or off only in the configuration file.</p>
+    </section>
+    <section aria-labelledby="pair-heading">
+      <h3 id="pair-heading">Pair a device</h3>
+      <button id="pair-start" type="button">Show a pairing code</button>
+      <div id="pairing-panel" class="stack" hidden>
+        <p id="pairing-state" class="muted" role="status" aria-live="polite"></p>
+        <p class="pairing-code"><code id="pairing-code"></code></p>
+        <div id="pairing-qr" class="qr" aria-label="QR code for pairing"></div>
+        <p id="pairing-countdown" class="countdown"></p>
+        <div id="pairing-decision" class="stack" hidden>
+          <p>Pair with <strong id="pairing-peer-name"></strong>?</p>
+          <p>Fingerprint: <code id="pairing-peer-fingerprint" class="fingerprint"></code></p>
+          <p class="muted small">Compare this fingerprint with the one shown on the other device.</p>
+          <div class="row">
+            <button id="pairing-accept" type="button">Accept</button>
+            <button id="pairing-reject" type="button" class="danger">Reject</button>
+          </div>
+        </div>
+        <button id="pairing-cancel" type="button" class="secondary">Cancel</button>
+      </div>
+    </section>
+    <section aria-labelledby="join-heading">
+      <h3 id="join-heading">Join a device</h3>
+      <ul id="nearby-list" class="nearby-list" aria-label="Nearby devices"></ul>
+      <form id="join-form" class="stack" autocomplete="off">
+        <label for="join-address">Address of the other device (for example 192.168.1.5:27472)</label>
+        <input id="join-address" type="text" required>
+        <label for="join-code">Pairing code shown on the other device</label>
+        <input id="join-code" type="text" inputmode="numeric" required>
+        <input id="join-device-id" type="hidden">
+        <button type="submit">Join</button>
+      </form>
+      <p id="join-state" class="muted" role="status" aria-live="polite"></p>
+    </section>
+    <section aria-labelledby="paired-heading">
+      <h3 id="paired-heading">Paired devices</h3>
+      <ul id="paired-list" class="paired-list"></ul>
+    </section>
+    <section aria-labelledby="warnings-heading">
+      <h3 id="warnings-heading">Warnings</h3>
+      <ul id="warnings-list" class="warnings-list"></ul>
+      <button id="warnings-clear" type="button" class="secondary">Clear warnings</button>
+    </section>
+  </section>
+</main>
 </body>
 </html>

@@ -126,3 +126,13 @@ button[aria-current="true"] { font-weight: bold; }
 .small { font-size: 0.85rem; }
 
 [hidden] { display: none !important; }
+
+/* 003 Devices view */
+.devices { padding: 0 1rem 1rem; }
+.fingerprint { font-family: ui-monospace, monospace; letter-spacing: 0.05em; }
+.pairing-code code { font-size: 2rem; letter-spacing: 0.15em; font-family: ui-monospace, monospace; }
+.qr svg { width: 12rem; height: 12rem; background: #ffffff; }
+.qr path { fill: #000000; }
+.nearby-list, .paired-list, .warnings-list { list-style: none; padding: 0; margin: 0 0 0.75rem; }
+.nearby-list li, .paired-list li, .warnings-list li { padding: 0.25rem 0; }
+.warnings-list li { color: var(--danger); }

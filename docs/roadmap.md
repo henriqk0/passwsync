@@ -9,9 +9,11 @@ Low RAM, Decentralization). Features are specified and built one at a time, in o
   through ports and adapters, never the other way round.
 - The app runs 100% **offline**. The network is used only by the device-sync features
   (003-005). There are **no accounts, no email, no login**.
-- The only secret is each **wallet's master password**, needed only to unlock a created or
-  shared wallet, **once per device restart per wallet**. The derived key stays in memory only
-  and is never persisted or sent. A shared wallet opens with the same master password.
+- The only secret that protects a wallet is its **master password**, needed only to unlock a
+  created or shared wallet, **once per device restart per wallet**. The derived key stays in
+  memory only and is never persisted or sent. A shared wallet opens with the same master
+  password. (Device pairing adds a one-time, short-lived pairing code; it protects the pairing
+  handshake only and never a wallet.)
 - Future runtime: a service installed via AUR, reached in a browser on localhost, and an
   Android app running in the background. Devices sync after some time, using very little CPU,
   RAM and battery (Syncthing-like: LAN discovery, block exchange, eventual consistency).

@@ -307,3 +307,164 @@ fn lock_controls_and_locked_rendering() {
     }
     assert!(js.contains("$(\"lock-wallet\").hidden = !wallet.unlocked"));
 }
+
+// --- 003: Devices view (contracts/http-api-network.md "UI") ---
+
+#[test]
+fn devices_view_shows_this_device_status_and_read_only_settings() {
+    let html = html();
+    for id in [
+        "devices-view",
+        "devices-heading",
+        "this-device-name",
+        "this-device-fingerprint",
+        "network-state",
+        "network-interfaces",
+        "network-settings",
+    ] {
+        assert!(html.contains(&format!("id=\"{id}\"")), "missing #{id}");
+    }
+    assert_inputs_labelled(&html);
+    let js = js();
+    assert!(js.contains("\"GET\", \"/api/network\""));
+    assert!(js.contains("const NET_POLL_MS = 5000;"));
+    // Background poll: every 5 s (1 s while pairing), rescheduled after each answer.
+    assert!(function(&js, "scheduleNetPoll").contains("setTimeout("));
+    assert!(function(&js, "scheduleNetPoll").contains("netPollDelay()"));
+    assert!(function(&js, "netPollDelay").contains("NET_POLL_MS"));
+    let render = function(&js, "renderNetwork");
+    assert!(render.contains("this_device"));
+    assert!(render.contains("textContent"));
+    assert!(render.contains("fingerprint"));
+    // Read-only: there is no control that changes network settings.
+    assert!(!js.contains("/api/network/settings"));
+    assert!(!html.contains("id=\"network-toggle\""));
+}
+
+#[test]
+fn ui_has_no_external_urls_and_csp_is_unchanged() {
+    use passwsyncd::http::response::CSP;
+    assert_eq!(
+        CSP,
+        "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; form-action 'none'; frame-ancestors 'none'; base-uri 'none'"
+    );
+    for (name, text) in [("html", html()), ("js", js()), ("css", css())] {
+        for needle in ["http://", "https://", "//cdn", "@import", "url("] {
+            // The SVG namespace URI is an identifier, never fetched.
+            let cleaned = text.replace("\"http://www.w3.org/2000/svg\"", "");
+            assert!(!cleaned.contains(needle), "{name} contains {needle}");
+        }
+    }
+    let js = js();
+    assert!(!js.contains("innerHTML") && !js.contains("outerHTML"));
+    assert!(!js.contains("insertAdjacentHTML") && !js.contains("document.write"));
+}
+
+#[test]
+fn pairing_controls_code_qr_countdown_and_decision() {
+    let html = html();
+    for id in [
+        "pair-start",
+        "pairing-panel",
+        "pairing-code",
+        "pairing-qr",
+        "pairing-countdown",
+        "pairing-peer-name",
+        "pairing-peer-fingerprint",
+        "pairing-accept",
+        "pairing-reject",
+        "pairing-cancel",
+        "pairing-state",
+    ] {
+        assert!(html.contains(&format!("id=\"{id}\"")), "missing #{id}");
+    }
+    let js = js();
+    for route in [
+        "\"/api/pairing/start\"",
+        "\"/api/pairing/accept\"",
+        "\"/api/pairing/reject\"",
+        "\"/api/pairing/cancel\"",
+    ] {
+        assert!(js.contains(route), "{route}");
+    }
+    let qr = function(&js, "renderQr");
+    assert!(qr.contains("createElementNS(SVG_NS"));
+    assert!(qr.contains("qr.path") && qr.contains("qr.size"));
+    assert!(qr.contains("setAttribute(\"d\""));
+    assert!(js.contains("const SVG_NS = \"http://www.w3.org/2000/svg\";"));
+    let pairing = function(&js, "renderPairing");
+    assert!(pairing.contains("textContent"));
+    assert!(pairing.contains("expires_in"));
+    assert!(pairing.contains("peer.fingerprint") && pairing.contains("peer.name"));
+    // Accept sends the device id the person saw.
+    assert!(handler(&js, "pairing-accept").contains("device_id"));
+    // Faster poll while a pairing or join is active.
+    assert!(js.contains("const NET_FAST_POLL_MS = 1000;"));
+    assert!(function(&js, "netPollDelay").contains("NET_FAST_POLL_MS"));
+}
+
+#[test]
+fn join_form_with_address_code_and_nearby_pick() {
+    let html = html();
+    for id in [
+        "join-form",
+        "join-address",
+        "join-code",
+        "join-device-id",
+        "join-state",
+        "nearby-list",
+    ] {
+        assert!(html.contains(&format!("id=\"{id}\"")), "missing #{id}");
+    }
+    assert!(html.contains("id=\"join-device-id\" type=\"hidden\""));
+    assert!(html.contains("id=\"join-code\" type=\"text\" inputmode=\"numeric\""));
+    assert_inputs_labelled(&html);
+    let js = js();
+    assert!(handler(&js, "join-form").contains("\"/api/pairing/join\""));
+    let nearby = function(&js, "renderNearby");
+    assert!(nearby.contains("$(\"join-address\").value"));
+    assert!(nearby.contains("$(\"join-device-id\").value"));
+    assert!(nearby.contains("fingerprint"));
+    // Typing an address by hand clears an id picked from the list.
+    assert!(handler(&js, "join-address").contains("$(\"join-device-id\").value = \"\""));
+}
+
+#[test]
+fn paired_list_status_and_warnings_with_clear() {
+    let html = html();
+    for id in ["paired-list", "warnings-list", "warnings-clear"] {
+        assert!(html.contains(&format!("id=\"{id}\"")), "missing #{id}");
+    }
+    let js = js();
+    let paired = function(&js, "renderPaired");
+    for part in [
+        "p.name",
+        "p.fingerprint",
+        "p.paired_at",
+        "p.last_seen",
+        "p.status",
+    ] {
+        assert!(paired.contains(part), "paired list misses {part}");
+    }
+    assert!(paired.contains("PEER_STATUS"));
+    assert!(js.contains("refused_by_peer: \"refused by peer\""));
+    let warnings = function(&js, "renderWarnings");
+    assert!(warnings.contains("claimed_fingerprint") && warnings.contains("addr"));
+    assert!(handler(&js, "warnings-clear").contains("\"/api/network/warnings/clear\""));
+}
+
+#[test]
+fn revoking_always_asks_for_confirmation_first() {
+    let js = js();
+    let revoke = function(&js, "revokeDevice");
+    let ask = revoke
+        .find("if (!window.confirm(")
+        .expect("revoke asks for confirmation");
+    let call = revoke.find("\"/revoke\"").expect("revoke route");
+    assert!(ask < call, "the request is only sent after confirmation");
+    assert!(revoke.contains("p.name") && revoke.contains("p.fingerprint"));
+    // No other code path calls the revoke route.
+    assert_eq!(js.matches("\"/revoke\"").count(), 1);
+    let paired = function(&js, "renderPaired");
+    assert!(paired.contains("button(\"Revoke\", () => revokeDevice(p)"));
+}

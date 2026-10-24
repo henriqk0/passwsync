@@ -239,6 +239,9 @@ fn route(path: &str) -> Option<Route<'_>> {
 
 /// Dispatches an admitted `/api/*` request.
 pub fn handle(state: &AppState, req: &Request, path: &str) -> Response {
+    if let Some(response) = super::api_network::handle(state, req, path) {
+        return response;
+    }
     let Some(route) = route(path) else {
         return Response::not_found();
     };

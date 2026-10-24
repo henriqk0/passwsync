@@ -38,4 +38,5 @@ pub fn mode(path: &Path) -> u32 {
     fs::metadata(path).unwrap().permissions().mode() & 0o7777
 }
 
+pub mod inventory;
 pub mod server;

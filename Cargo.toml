@@ -4,6 +4,8 @@ members = [
     "crates/vault-storage-file",
     "crates/wallet-service",
     "crates/passwsyncd",
+    "crates/device-link",
+    "crates/device-link-net",
 ]
 resolver = "3"
 
@@ -18,6 +20,15 @@ httparse = "1.10"
 serde_json = "1"
 signal-hook = { version = "0.3", default-features = false, features = ["iterator"] }
 subtle = "2.6"
+zeroize = "1"
+rand_core = "0.6"
+# 003 device identity and pairing (research R16). Unaudited crates are exact-pinned.
+snow = { version = "=0.10.0", default-features = false, features = ["use-chacha20poly1305", "use-blake2", "use-curve25519", "use-getrandom"] }
+spake2 = "=0.4.0"
+curve25519-dalek = "4.1"
+sha2 = "0.10"
+if-addrs = { version = "=0.15.0", features = ["link-local"] }
+qrcodegen = "=1.8.0"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

@@ -7,31 +7,85 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use device_link::link::Timing;
+use device_link::policy::AddressPolicy;
+use device_link_net::interfaces::FakeInterfaces;
 use passwsyncd::app::{Deps, Running, start};
 use passwsyncd::hardening::FakeHardening;
 use passwsyncd::log::Log;
+use passwsyncd::net_runtime::NetDeps;
 use passwsyncd::paths::Env;
 use vault_core::KdfConfig;
 use wallet_service::testkit::FakeElapsedClock;
 
 use super::{TempDir, set_mode};
 
-/// A port no other test in this process has been given (the kernel may hand the same
-/// ephemeral port to two quick `bind(0)` calls).
+/// A port no other test in this process has been given. Ports come from below the kernel's
+/// ephemeral range (32768+), so an outgoing connection of a concurrent test can never take a
+/// port between the moment it is handed out and the moment it is bound.
 pub fn free_port() -> u16 {
-    static GIVEN: Mutex<Vec<u16>> = Mutex::new(Vec::new());
+    static NEXT: Mutex<u16> = Mutex::new(0);
+    let mut next = NEXT.lock().unwrap();
+    if *next == 0 {
+        // Spread concurrent test processes over the range.
+        *next = 15_000 + (std::process::id() % 1_700) as u16 * 10;
+    }
     loop {
-        let port = TcpListener::bind("127.0.0.1:0")
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .port();
-        let mut given = GIVEN.lock().unwrap();
-        if !given.contains(&port) {
-            given.push(port);
+        let port = *next;
+        *next = if *next >= 32_000 { 15_000 } else { *next + 1 };
+        if TcpListener::bind(("127.0.0.1", port)).is_ok()
+            && TcpListener::bind(("0.0.0.0", port)).is_ok()
+        {
             return port;
         }
     }
+}
+
+/// A port free for TCP and UDP alike (peer and discovery sockets).
+pub fn free_net_port() -> u16 {
+    loop {
+        let port = free_port();
+        if std::net::UdpSocket::bind(("0.0.0.0", port)).is_ok()
+            && TcpListener::bind(("0.0.0.0", port)).is_ok()
+        {
+            return port;
+        }
+    }
+}
+
+/// Config lines turning networking on with fresh peer and discovery ports.
+pub fn net_config() -> String {
+    format!(
+        "network = on\npeer_port = {}\ndiscovery_port = {}\n",
+        free_net_port(),
+        free_net_port()
+    )
+}
+
+/// Short protocol timers so loopback tests finish quickly.
+pub fn fast_timing() -> Timing {
+    Timing {
+        announce: Duration::from_millis(300),
+        nearby_expiry: Duration::from_millis(900),
+        step_timeout: Duration::from_millis(1500),
+        keepalive: Duration::from_millis(600),
+        idle_close: Duration::from_millis(1500),
+        dial_backoff_min: Duration::from_millis(200),
+        dial_backoff_max: Duration::from_millis(800),
+        rescan: Duration::from_millis(300),
+    }
+}
+
+/// Polls `check` every 20 ms for up to `limit`.
+pub fn wait_for(limit: Duration, mut check: impl FnMut() -> bool) -> bool {
+    let start = std::time::Instant::now();
+    while start.elapsed() < limit {
+        if check() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    check()
 }
 
 pub struct Fixture {
@@ -83,6 +137,16 @@ impl Fixture {
         &self,
         hardening: FakeHardening,
     ) -> (Deps, Arc<Mutex<Vec<u8>>>, Arc<FakeElapsedClock>) {
+        self.deps_with(hardening, Vec::new())
+    }
+
+    /// `announce_ports`: where this instance sends announcements (two instances on one
+    /// host listen on different discovery ports).
+    pub fn deps_with(
+        &self,
+        hardening: FakeHardening,
+        announce_ports: Vec<u16>,
+    ) -> (Deps, Arc<Mutex<Vec<u8>>>, Arc<FakeElapsedClock>) {
         let (log, buffer) = Log::to_buffer();
         let clock = Arc::new(FakeElapsedClock::new());
         let deps = Deps {
@@ -91,6 +155,12 @@ impl Fixture {
             log,
             wallet_kdf: KdfConfig::MINIMUM,
             elapsed: clock.clone(),
+            net: NetDeps {
+                policy: AddressPolicy::testkit(),
+                interfaces: Some(Arc::new(FakeInterfaces::loopback())),
+                timing: fast_timing(),
+                announce_ports,
+            },
         };
         (deps, buffer, clock)
     }
@@ -114,11 +184,15 @@ impl TestServer {
     }
 
     pub fn start_in(fx: Fixture) -> Self {
+        Self::start_announcing(fx, Vec::new())
+    }
+
+    pub fn start_announcing(fx: Fixture, announce_ports: Vec<u16>) -> Self {
         // A child process spawned by a concurrent test can hold a copy of the previous
         // instance's lock descriptor for a moment between fork and exec; retry briefly.
         let mut attempts = 0;
         let (running, log, clock) = loop {
-            let (deps, log, clock) = fx.deps(FakeHardening::ok());
+            let (deps, log, clock) = fx.deps_with(FakeHardening::ok(), announce_ports.clone());
             match start(deps) {
                 Ok(running) => break (running, log, clock),
                 Err(e) if e.exit_code() == 4 && attempts < 100 => {
@@ -135,6 +209,23 @@ impl TestServer {
             clock,
             running: Some(running),
         }
+    }
+
+    /// The configured peer port (from the config file).
+    pub fn peer_port(&self) -> u16 {
+        self.config_value("peer_port").unwrap_or(27472)
+    }
+
+    pub fn discovery_port(&self) -> u16 {
+        self.config_value("discovery_port").unwrap_or(27473)
+    }
+
+    fn config_value(&self, key: &str) -> Option<u16> {
+        let text = fs::read_to_string(self.fx.config_dir.join("config")).ok()?;
+        text.lines()
+            .filter_map(|l| l.split_once('='))
+            .find(|(k, _)| k.trim() == key)
+            .and_then(|(_, v)| v.trim().parse().ok())
     }
 
     pub fn running(&self) -> &Running {

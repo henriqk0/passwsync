@@ -2,6 +2,7 @@
 //! JSON API.
 
 pub mod api;
+pub mod api_network;
 pub mod guard;
 pub mod pages;
 pub mod request;
@@ -26,6 +27,7 @@ pub struct AppState {
     pub launch_file: PathBuf,
     pub elapsed: Arc<dyn ElapsedClock>,
     pub service: Arc<Service>,
+    pub net: Arc<crate::net_runtime::NetRuntime>,
 }
 
 impl AppState {

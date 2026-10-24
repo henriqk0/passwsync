@@ -1,0 +1,25 @@
+[package]
+name = "device-link"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Device identity, pairing and secure channel logic for passwsync (no I/O)"
+
+[features]
+testkit = []
+
+[dependencies]
+snow = { workspace = true }
+spake2 = { workspace = true }
+curve25519-dalek = { workspace = true }
+sha2 = { workspace = true }
+zeroize = { workspace = true, features = ["derive"] }
+rand_core = { workspace = true, features = ["getrandom"] }
+subtle = { workspace = true }
+
+[dev-dependencies]
+device-link = { path = ".", features = ["testkit"] }
+
+[lints]
+workspace = true
