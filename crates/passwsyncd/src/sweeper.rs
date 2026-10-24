@@ -47,6 +47,7 @@ pub fn spawn(
     log: Log,
     clock: Arc<dyn ElapsedClock>,
     stopper: Stopper,
+    extra: Box<dyn Fn(Duration) + Send>,
 ) -> io::Result<JoinHandle<()>> {
     thread::Builder::new()
         .name("sweeper".into())
@@ -54,6 +55,7 @@ pub fn spawn(
         .spawn(move || {
             while !stopper.wait_timeout(SWEEP_INTERVAL) {
                 tick(&service, &rejections, &log, clock.as_ref());
+                extra(clock.monotonic());
             }
         })
 }

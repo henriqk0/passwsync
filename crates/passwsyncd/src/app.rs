@@ -20,6 +20,7 @@ use crate::hardening::{self, Hardening, OsHardening};
 use crate::http::server::{self, ServerThreads};
 use crate::http::{AppState, pages};
 use crate::log::{ErrorClass, LockReason, Log, LogEvent, Protection, Rejections};
+use crate::net_runtime::{NetDeps, NetRuntime};
 use crate::paths::{self, Env, PathError, Paths};
 use crate::signals::{self, SignalThread};
 
@@ -36,6 +37,8 @@ pub struct Deps {
     /// KDF cost for wallets created by this service.
     pub wallet_kdf: KdfConfig,
     pub elapsed: Arc<dyn ElapsedClock>,
+    /// 003 device networking adapters.
+    pub net: NetDeps,
 }
 
 impl Deps {
@@ -46,6 +49,7 @@ impl Deps {
             log: Log::stderr(),
             wallet_kdf: KdfConfig::DEFAULT,
             elapsed: Arc::new(OsElapsedClock),
+            net: NetDeps::production(),
         }
     }
 }
@@ -153,6 +157,35 @@ impl Running {
         &self.state.rejections
     }
 
+    /// `status.state` of the device networking (003).
+    pub fn network_status(&self) -> &'static str {
+        self.state.net.state().as_str()
+    }
+
+    /// This device's fingerprint when an identity is loaded.
+    pub fn fingerprint(&self) -> Option<String> {
+        self.state
+            .net
+            .this_device
+            .as_ref()
+            .map(|d| d.fingerprint.to_string())
+    }
+
+    /// Whether the device private key is in memory (only while networking is on, FR-007).
+    pub fn device_key_held(&self) -> bool {
+        self.state.net.key_held()
+    }
+
+    /// Runs one sweeper tick now (tests; the sweeper thread does this every 15 s).
+    pub fn sweep_now(&self) {
+        crate::sweeper::tick(
+            &self.state.service,
+            &self.state.rejections,
+            &self.state.log,
+            self.state.elapsed.as_ref(),
+        );
+    }
+
     pub fn stopper(&self) -> Stopper {
         self.stopper.clone()
     }
@@ -166,6 +199,8 @@ impl Running {
         }
         self.server.shutdown();
         let _ = self.sweeper.join();
+        // 003: network down, key and code wiped, before wallets are locked.
+        self.state.net.stop();
         for wallet in &self.state.service.lock_all() {
             self.state.log.emit(&LogEvent::Locked {
                 wallet,
@@ -195,6 +230,7 @@ fn start_with(deps: Deps, stopper: Stopper, with_signals: bool) -> Result<Runnin
         log,
         wallet_kdf,
         elapsed,
+        net,
     } = deps;
 
     // 2. Protections first; nothing else happens if one fails.
@@ -219,6 +255,14 @@ fn start_with(deps: Deps, stopper: Stopper, with_signals: bool) -> Result<Runnin
     let addr = listener
         .local_addr()
         .map_err(|_| StartError::Fatal("listener address"))?;
+
+    // 5a/5b. Device identity and (if enabled) networking; never fatal.
+    let net = Arc::new(NetRuntime::start(
+        settings.network.clone(),
+        &paths,
+        net,
+        &log,
+    ));
 
     // 6. Signal handling before the launch file exists, so a signal can never leave it behind.
     let signals = if with_signals {
@@ -248,6 +292,7 @@ fn start_with(deps: Deps, stopper: Stopper, with_signals: bool) -> Result<Runnin
         launch_file: paths.launch_file.clone(),
         elapsed,
         service,
+        net,
     });
     let sweeper = crate::sweeper::spawn(
         Arc::clone(&state.service),
@@ -255,6 +300,10 @@ fn start_with(deps: Deps, stopper: Stopper, with_signals: bool) -> Result<Runnin
         state.log.clone(),
         Arc::clone(&state.elapsed),
         stopper.clone(),
+        {
+            let net = Arc::clone(&state.net);
+            Box::new(move |now| net.tick(now))
+        },
     )
     .map_err(|_| {
         let _ = fs::remove_file(&paths.launch_file);

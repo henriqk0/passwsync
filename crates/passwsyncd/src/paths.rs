@@ -8,8 +8,11 @@ use std::io::{self, Read, Write};
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 
+use device_link::files::{decode_device_key, encode_device_key};
+use device_link::identity::DeviceKey;
 use rand_core::{OsRng, RngCore};
 use vault_core::DeviceId;
+use zeroize::Zeroizing;
 
 /// A path that cannot be used safely; start-up exits with code 2.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -67,6 +70,10 @@ pub struct Paths {
     pub config_dir: PathBuf,
     pub config_file: PathBuf,
     pub device_id_file: PathBuf,
+    /// 003: X25519 device key (contracts/host-runtime-network.md).
+    pub device_key_file: PathBuf,
+    /// 003: pinned peers.
+    pub peers_file: PathBuf,
     pub wallets_dir: PathBuf,
     pub runtime_dir: PathBuf,
     pub launch_file: PathBuf,
@@ -97,6 +104,8 @@ impl Paths {
         Ok(Self {
             config_file: config_dir.join("config"),
             device_id_file: config_dir.join("device-id"),
+            device_key_file: config_dir.join("device-key"),
+            peers_file: config_dir.join("peers"),
             config_dir,
             wallets_dir: data_home.join("passwsync/wallets"),
             launch_file: runtime_dir.join("launch-url"),
@@ -226,5 +235,68 @@ pub fn write_private_atomic(path: &Path, contents: &[u8]) -> io::Result<()> {
     if result.is_err() {
         let _ = fs::remove_file(&temp);
     }
+    result
+}
+
+/// Why a 003 device file cannot be used. Unlike 002 files this never stops the service: the
+/// network stays off with a status (contracts/host-runtime-network.md).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeviceFileError {
+    /// Exists but is not a private regular file of ours, cannot be read, or is malformed.
+    Unusable,
+    /// Missing and could not be created.
+    CannotCreate,
+}
+
+/// Reads an existing private regular file (no symlink) of at most `limit` bytes.
+pub(crate) fn read_private_file(path: &Path, limit: u64) -> io::Result<Option<Zeroizing<Vec<u8>>>> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    if !metadata.is_file() || check_private(path, &metadata).is_err() || metadata.len() > limit {
+        return Err(io::Error::from(io::ErrorKind::InvalidData));
+    }
+    let mut bytes = Zeroizing::new(Vec::with_capacity(metadata.len() as usize));
+    fs::File::open(path)?.take(limit).read_to_end(&mut bytes)?;
+    Ok(Some(bytes))
+}
+
+/// Loads the device key, creating it from the OS random source when the file is missing.
+/// An existing file that is not usable is never replaced (FR-005).
+pub fn load_or_create_device_key(path: &Path) -> Result<DeviceKey, DeviceFileError> {
+    match read_private_file(path, 256) {
+        Ok(Some(bytes)) => decode_device_key(&bytes).map_err(|_| DeviceFileError::Unusable),
+        Ok(None) => {
+            let key = DeviceKey::generate(&mut OsRng).map_err(|_| DeviceFileError::CannotCreate)?;
+            let text = encode_device_key(&key);
+            write_private_atomic_new(path, text.as_bytes())
+                .map_err(|_| DeviceFileError::CannotCreate)?;
+            Ok(key)
+        }
+        Err(_) => Err(DeviceFileError::Unusable),
+    }
+}
+
+/// Like [`write_private_atomic`], but never replaces an existing file (hard link instead of
+/// rename, so a concurrent creator wins and nothing is overwritten).
+fn write_private_atomic_new(path: &Path, contents: &[u8]) -> io::Result<()> {
+    let mut temp_name = OsString::from(".");
+    temp_name.push(path.file_name().unwrap_or_default());
+    temp_name.push(".tmp");
+    let temp = path.with_file_name(temp_name);
+    let _ = fs::remove_file(&temp);
+    let result = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&temp)
+        .and_then(|mut file| {
+            file.write_all(contents)?;
+            file.sync_all()
+        })
+        .and_then(|()| fs::hard_link(&temp, path));
+    let _ = fs::remove_file(&temp);
     result
 }

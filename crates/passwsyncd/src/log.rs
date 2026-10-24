@@ -10,7 +10,34 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
+use device_link::error::{DropCounters, DropCounts, FailReason};
+use device_link::identity::Fingerprint;
+use device_link::name::InterfaceName;
 use wallet_service::WalletName;
+
+/// Why networking is not running (003).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NetUnavailable {
+    IdentityUnusable,
+    PeersUnusable,
+    PortInUse(u16),
+    NoLocalNetwork,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DisconnectReason {
+    Timeout,
+    Closed,
+    Error,
+    Duplicate,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RefuseReason {
+    Unpaired,
+    Revoked,
+    KeyMismatch,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Protection {
@@ -113,6 +140,50 @@ pub enum LogEvent<'a> {
         class: ErrorClass,
     },
     Stopping,
+    // --- 003 network events (contracts/host-runtime-network.md) ---
+    NetworkOff,
+    NetworkOn {
+        peer: u16,
+        discovery: u16,
+        interfaces: &'a [InterfaceName],
+    },
+    NetworkUnavailable(NetUnavailable),
+    InterfacesChanged {
+        interfaces: &'a [InterfaceName],
+    },
+    PairingStarted,
+    PairingSucceeded {
+        fingerprint: &'a Fingerprint,
+    },
+    PairingFailed(FailReason),
+    PeerConnected {
+        fingerprint: &'a Fingerprint,
+    },
+    PeerDisconnected {
+        fingerprint: &'a Fingerprint,
+        why: DisconnectReason,
+    },
+    PeerRefused {
+        fingerprint: &'a Fingerprint,
+        why: RefuseReason,
+    },
+    RefusedByPeer {
+        fingerprint: &'a Fingerprint,
+    },
+    DeviceRevoked {
+        fingerprint: &'a Fingerprint,
+    },
+    Dropped(DropCounts),
+}
+
+fn write_names(f: &mut fmt::Formatter<'_>, names: &[InterfaceName]) -> fmt::Result {
+    for (i, name) in names.iter().enumerate() {
+        if i > 0 {
+            f.write_str(",")?;
+        }
+        f.write_str(name.as_str())?;
+    }
+    Ok(())
 }
 
 impl fmt::Display for LogEvent<'_> {
@@ -143,6 +214,64 @@ impl fmt::Display for LogEvent<'_> {
             ),
             Self::Error { class } => write!(f, "error {}", class.word()),
             Self::Stopping => f.write_str("stopping"),
+            Self::NetworkOff => f.write_str("network off"),
+            Self::NetworkOn {
+                peer,
+                discovery,
+                interfaces,
+            } => {
+                write!(
+                    f,
+                    "network on peer={peer} discovery={discovery} interfaces="
+                )?;
+                write_names(f, interfaces)
+            }
+            Self::NetworkUnavailable(why) => match why {
+                NetUnavailable::IdentityUnusable => {
+                    f.write_str("network unavailable (identity-unusable)")
+                }
+                NetUnavailable::PeersUnusable => {
+                    f.write_str("network unavailable (peers-unusable)")
+                }
+                NetUnavailable::PortInUse(port) => {
+                    write!(f, "network unavailable (port-in-use {port})")
+                }
+                NetUnavailable::NoLocalNetwork => {
+                    f.write_str("network unavailable (no-local-network)")
+                }
+            },
+            Self::InterfacesChanged { interfaces } => {
+                f.write_str("network interfaces changed ")?;
+                write_names(f, interfaces)
+            }
+            Self::PairingStarted => f.write_str("pairing started"),
+            Self::PairingSucceeded { fingerprint } => write!(f, "pairing succeeded {fingerprint}"),
+            Self::PairingFailed(reason) => write!(f, "pairing failed ({reason})"),
+            Self::PeerConnected { fingerprint } => write!(f, "peer connected {fingerprint}"),
+            Self::PeerDisconnected { fingerprint, why } => {
+                let word = match why {
+                    DisconnectReason::Timeout => "timeout",
+                    DisconnectReason::Closed => "closed",
+                    DisconnectReason::Error => "error",
+                    DisconnectReason::Duplicate => "duplicate",
+                };
+                write!(f, "peer disconnected {fingerprint} ({word})")
+            }
+            Self::PeerRefused { fingerprint, why } => {
+                let word = match why {
+                    RefuseReason::Unpaired => "unpaired",
+                    RefuseReason::Revoked => "revoked",
+                    RefuseReason::KeyMismatch => "key-mismatch",
+                };
+                write!(f, "peer refused {fingerprint} ({word})")
+            }
+            Self::RefusedByPeer { fingerprint } => write!(f, "refused by peer {fingerprint}"),
+            Self::DeviceRevoked { fingerprint } => write!(f, "device revoked {fingerprint}"),
+            Self::Dropped(c) => write!(
+                f,
+                "dropped public={} malformed={} oversized={} overflow={} timeout={}",
+                c.public, c.malformed, c.oversized, c.overflow, c.timeout
+            ),
         }
     }
 }
@@ -277,5 +406,28 @@ impl Rejections {
         };
         *last = Some(now);
         Some(LogEvent::Rejected(counts))
+    }
+}
+
+/// Gate for the aggregated `dropped ...` line: at most once per minute, only when non-zero.
+#[derive(Default)]
+pub struct DropLog {
+    last_emit: Mutex<Option<Duration>>,
+}
+
+impl DropLog {
+    pub fn flush(&self, counters: &DropCounters, now: Duration) -> Option<LogEvent<'static>> {
+        let mut last = self
+            .last_emit
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if last.is_some_and(|at| now.saturating_sub(at) < LOG_INTERVAL) {
+            return None;
+        }
+        if counters.snapshot().is_zero() {
+            return None;
+        }
+        *last = Some(now);
+        Some(LogEvent::Dropped(counters.take()))
     }
 }

@@ -1,0 +1,24 @@
+[package]
+name = "device-link-net"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "std::net adapter for device-link: TCP listener, dialer, UDP discovery, interfaces"
+
+[features]
+testkit = ["device-link/testkit"]
+
+[dependencies]
+device-link = { path = "../device-link" }
+if-addrs = { workspace = true }
+rustix = { workspace = true, features = ["net"] }
+zeroize = { workspace = true }
+rand_core = { workspace = true, features = ["getrandom"] }
+
+[dev-dependencies]
+device-link = { path = "../device-link", features = ["testkit"] }
+device-link-net = { path = ".", features = ["testkit"] }
+
+[lints]
+workspace = true
