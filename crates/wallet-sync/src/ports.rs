@@ -138,6 +138,45 @@ pub trait Merger: Send + Sync {
     fn merge(&self, request: &MergeRequest) -> MergeOutcome;
 }
 
+/// 005: non-secret metadata of one received wallet file (no wallet name, id or state).
+#[derive(Clone, PartialEq, Eq)]
+pub struct ReceivedMeta {
+    /// Random id, the file name stem; not secret but never sent and never shown by `Debug`.
+    pub id: [u8; 16],
+    pub sender: PeerId,
+    /// Wall-clock receipt time (expiry after 24 h).
+    pub received_at: u64,
+    /// Ciphertext size in bytes.
+    pub size: u64,
+}
+
+impl fmt::Debug for ReceivedMeta {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ReceivedMeta")
+            .field("sender", &self.sender)
+            .field("received_at", &self.received_at)
+            .field("size", &self.size)
+            .finish_non_exhaustive()
+    }
+}
+
+/// 005: received wallet files (ciphertext only, owner-only in the host). Start-up clean-up
+/// is the host's job through `list` and `delete`.
+pub trait ReceivedStore: Send + Sync {
+    /// Complete entries, oldest first.
+    fn list(&self) -> Result<Vec<ReceivedMeta>, StoreError>;
+    /// Starts receiving into a partial file; `finish` writes the ciphertext then the meta
+    /// atomically; dropping the writer without `finish` deletes the partial file.
+    fn begin(
+        &self,
+        id: [u8; 16],
+        sender: PeerId,
+        received_at: u64,
+    ) -> Result<Box<dyn IncomingCopy>, StoreError>;
+    fn read(&self, id: [u8; 16]) -> Result<Vec<u8>, StoreError>;
+    fn delete(&self, id: [u8; 16]) -> Result<(), StoreError>;
+}
+
 /// Monotonic time (stops while suspended is fine: it only drives timers).
 pub trait MonoClock: Send + Sync {
     fn now(&self) -> Duration;

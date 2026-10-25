@@ -187,6 +187,21 @@ impl Running {
         );
     }
 
+    /// Runs the sharing part of a sweeper tick now (tests).
+    pub fn share_tick_now(&self) {
+        self.state.share.tick();
+    }
+
+    /// Test hook: the next receive into `received/` fails at `step` (fault injection).
+    pub fn inject_receive_fault(&self, step: crate::share_store::ReceiveFault) {
+        self.state.share.core().received.inject(step);
+    }
+
+    /// Test hook: moves the share engine's monotonic and wall clocks forward.
+    pub fn advance_share_clock(&self, by: std::time::Duration) {
+        self.state.share.advance_clock(by);
+    }
+
     /// Test hook: the next sync-record write fails at `step` (crash-injection tests).
     pub fn inject_sync_fault(&self, step: crate::sync_store::WriteStep) {
         self.state.sync.shared().store.inject(step);
@@ -205,6 +220,8 @@ impl Running {
         }
         self.server.shutdown();
         let _ = self.sweeper.join();
+        // 005: the share exchange is aborted (best effort) before sync and network stop.
+        self.state.share.shutdown();
         // 004: sync threads stop (rounds aborted) before the network closes.
         self.state.sync.stop();
         // 003: network down, key and code wiped, before wallets are locked.
@@ -282,9 +299,16 @@ fn start_with(deps: Deps, stopper: Stopper, with_signals: bool) -> Result<Runnin
     pages::write_launch_file(&paths.launch_file, settings.port, sessions.launch_token())
         .map_err(|_| StartError::Path(PathError::new(&paths.launch_file, "cannot be written")))?;
     // 004: every save goes through the journaling directory (inactive with networking off).
+    // 005: one transfer limit for sync and share together; received wallets (step 5e).
+    let slots = wallet_sync::slots::TransferSlots::new(2);
+    let received = Arc::new(crate::share_store::FsReceivedStore::new(
+        paths.received_dir.clone(),
+    ));
     let sync = Arc::new(SyncRuntime::new(
         paths.sync_dir.clone(),
         paths.wallets_dir.clone(),
+        received,
+        slots,
         Arc::clone(&net),
         log.clone(),
         settings.sync_interval,
@@ -308,6 +332,16 @@ fn start_with(deps: Deps, stopper: Stopper, with_signals: bool) -> Result<Runnin
     if net.settings.enabled && net.key_held() {
         sync.start();
     }
+    let share = Arc::new(crate::share_runtime::ShareRuntime::new(
+        sync.shared(),
+        Arc::clone(&service),
+        Arc::clone(&net),
+        log.clone(),
+    ));
+    // 005: every lock cause cancels an invitation for that wallet (FR-009a).
+    service.set_lock_observer(share.lock_observer());
+    // 5e. Received wallets: clean-up of partial and inconsistent files (never fatal).
+    share.startup_cleanup();
     let state = Arc::new(AppState {
         port: settings.port,
         settings,
@@ -319,6 +353,7 @@ fn start_with(deps: Deps, stopper: Stopper, with_signals: bool) -> Result<Runnin
         service,
         net,
         sync,
+        share,
     });
     let sweeper = crate::sweeper::spawn(
         Arc::clone(&state.service),
@@ -328,7 +363,11 @@ fn start_with(deps: Deps, stopper: Stopper, with_signals: bool) -> Result<Runnin
         stopper.clone(),
         {
             let net = Arc::clone(&state.net);
-            Box::new(move |now| net.tick(now))
+            let share = Arc::clone(&state.share);
+            Box::new(move |now| {
+                net.tick(now);
+                share.tick();
+            })
         },
     )
     .map_err(|_| {

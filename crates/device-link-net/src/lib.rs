@@ -31,7 +31,7 @@ use device_link::pairing::{
 use device_link::policy::AddressPolicy;
 use device_link::ports::{MonoClock, WallClock};
 use device_link::registry::PeerRegistry;
-use device_link::wire::{CloseReason, Payload};
+use device_link::wire::{CloseReason, HelloVersion, Payload};
 use rand_core::OsRng;
 use zeroize::Zeroizing;
 
@@ -96,6 +96,9 @@ pub enum NetEvent {
     /// 004: the peer closed a channel v2 dial before Noise message 2; it is dialed with v1
     /// (no sync) and retried with v2 after 24 hours or a restart.
     PeerLegacy(DeviceId),
+    /// 005: the peer closed a channel v3 dial before Noise message 2; it is dialed with v2
+    /// (sync, no sharing) and retried with v3 after 24 hours or a restart.
+    PeerNoShare(DeviceId),
 }
 
 /// 004: receives the sync side of channel v2 (contracts/vault-core-sync-api.md). Called on
@@ -108,6 +111,9 @@ pub trait SyncFrameSink: Send + Sync {
     fn frame(&self, peer: DeviceId, conn: u64, payload: Payload);
     /// The channel closed.
     fn channel_down(&self, peer: DeviceId, conn: u64);
+    /// 005: the Hello version of a newly authenticated channel (every version), reported
+    /// before `channel_up`. `ShareMsg`/`ShareData` payloads arrive through `frame` on v3.
+    fn channel_version(&self, _peer: DeviceId, _conn: u64, _version: HelloVersion) {}
 }
 
 /// Why [`Node::send_sync`] did not send.
@@ -117,14 +123,33 @@ pub enum SendError {
     NotConnected,
     /// The channel was negotiated with Hello v1.
     NotSyncEnabled,
+    /// 005: a share payload on a channel below v3.
+    NotShareEnabled,
     /// Not a `SyncCtl`/`CopyData` payload, or out of bounds.
     Protocol,
     /// The write failed; the channel is being closed.
     Io,
 }
 
-/// A v1-only peer is retried with channel v2 after this long (004 R7).
+/// A v1-only peer is retried with channel v2 after this long (004 R7); 005 uses the same
+/// delay to retry a lowered per-peer maximum version.
 pub const LEGACY_RETRY: Duration = Duration::from_secs(24 * 3600);
+
+/// Why [`Node::ensure_channel`] found no channel (005 R11).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EnsureError {
+    /// The expected device is not pinned, the answering device is not pinned, or the peer
+    /// refused this device.
+    NotPaired,
+    /// The device at the address proved another identity than the expected one (FR-012).
+    IdMismatch,
+    /// No address, an address outside the policy, or the dial or handshake failed.
+    Unreachable,
+    /// Networking is stopping or no usable interface exists.
+    NetworkOff,
+    /// The expected device is this device.
+    SelfDevice,
+}
 
 pub trait EventSink: Send + Sync {
     fn emit(&self, event: NetEvent);
@@ -268,8 +293,10 @@ pub(crate) struct ChannelEntry {
     pub channel: Arc<Mutex<Channel>>,
     /// Monotonic time of the last frame written (keepalive clock, shared with `send_sync`).
     pub last_sent: Arc<Mutex<Duration>>,
-    /// 004: channel v2 (sync frames allowed).
+    /// 004: channel v2 or v3 (sync frames allowed).
     pub sync: bool,
+    /// 005: the negotiated Hello version (v3 allows share frames).
+    pub version: HelloVersion,
 }
 
 impl ChannelEntry {
@@ -297,8 +324,8 @@ pub(crate) struct State {
     pub slot: PairingSlot,
     pub rate: CodeRateLimiter,
     pub next_generation: u64,
-    /// 004: v1-only peers and when to try channel v2 again.
-    pub legacy: HashMap<DeviceId, Duration>,
+    /// 004/005: per-peer lowered maximum channel version and when to try v3 again.
+    pub max_version: HashMap<DeviceId, (HelloVersion, Duration)>,
 }
 
 pub(crate) struct Shared {
@@ -454,7 +481,7 @@ impl Node {
                 slot: PairingSlot::default(),
                 rate: CodeRateLimiter::default(),
                 next_generation: 1,
-                legacy: HashMap::new(),
+                max_version: HashMap::new(),
             }),
             threads: Mutex::new(Vec::new()),
             sync_sink: Mutex::new(None),
@@ -651,20 +678,29 @@ impl Node {
             .sync_sink
             .lock()
             .unwrap_or_else(PoisonError::into_inner) = Some(Arc::clone(&sink));
-        let up: Vec<(DeviceId, u64, [u8; 32], bool)> = {
+        let up: Vec<(DeviceId, u64, HelloVersion, bool, [u8; 32], bool)> = {
             let state = self.shared.lock();
             state
                 .channels
                 .iter()
-                .filter(|(_, e)| e.sync)
                 .filter_map(|(id, e)| {
                     let channel = e.channel.lock().ok()?;
-                    Some((*id, e.conn, channel.session_hash(), channel.is_dialer()))
+                    Some((
+                        *id,
+                        e.conn,
+                        e.version,
+                        e.sync,
+                        channel.session_hash(),
+                        channel.is_dialer(),
+                    ))
                 })
                 .collect()
         };
-        for (peer, conn, session, dialer) in up {
-            sink.channel_up(peer, conn, session, dialer);
+        for (peer, conn, version, sync, session, dialer) in up {
+            sink.channel_version(peer, conn, version);
+            if sync {
+                sink.channel_up(peer, conn, session, dialer);
+            }
         }
     }
 
@@ -677,7 +713,7 @@ impl Node {
         conn: u64,
         payload: &Payload,
     ) -> Result<(), SendError> {
-        let (stream, channel, last_sent, sync) = {
+        let (stream, channel, last_sent, sync, version) = {
             let state = self.shared.lock();
             let entry = state
                 .channels
@@ -690,10 +726,18 @@ impl Node {
                 Arc::clone(&entry.channel),
                 Arc::clone(&entry.last_sent),
                 entry.sync,
+                entry.version,
             )
         };
         if !sync {
             return Err(SendError::NotSyncEnabled);
+        }
+        if matches!(
+            payload,
+            Payload::ShareMsg { .. } | Payload::ShareData { .. }
+        ) && version != HelloVersion::V3
+        {
+            return Err(SendError::NotShareEnabled);
         }
         let mut guard = channel.lock().map_err(|_| SendError::Io)?;
         let frame = guard.seal_sync(payload).map_err(|_| SendError::Protocol)?;
@@ -716,12 +760,37 @@ impl Node {
 
     /// 004: whether `peer` is currently treated as v1-only.
     pub fn is_legacy(&self, peer: &DeviceId) -> bool {
+        self.max_version(peer) == HelloVersion::V1
+    }
+
+    /// 005: the highest channel version dialed to `peer` now (v3 unless lowered within the
+    /// last 24 hours of this run).
+    pub fn max_version(&self, peer: &DeviceId) -> HelloVersion {
         let now = self.shared.mono.now();
-        self.shared
-            .lock()
-            .legacy
-            .get(peer)
-            .is_some_and(|until| now < *until)
+        dialer::max_version(&self.shared.lock(), peer, now)
+    }
+
+    /// 005: the Hello version of the current channel to `peer`, if one is open.
+    pub fn channel_version(&self, peer: &DeviceId) -> Option<HelloVersion> {
+        self.shared.lock().channels.get(peer).map(|e| e.version)
+    }
+
+    /// 005: returns the open channel to `expected`, or dials `hint` (else the pin's last
+    /// known address) under the address policy. With `expected = None` the responder's static
+    /// key must be pinned and that device is the result. Blocks for at most the step
+    /// timeouts of the dial attempts; call it from a short-lived worker (R11).
+    pub fn ensure_channel(
+        &self,
+        expected: Option<DeviceId>,
+        hint: Option<SocketAddrV4>,
+    ) -> Result<(DeviceId, u64), EnsureError> {
+        ensure_channel(&self.shared, expected, hint)
+    }
+
+    /// 005: a cloneable handle for [`Node::ensure_channel`] that a worker thread can use
+    /// without holding the node (it reports `NetworkOff` once the node stopped).
+    pub fn opener(&self) -> ChannelOpener {
+        ChannelOpener(Arc::clone(&self.shared))
     }
 
     /// 004: open sync-enabled channels as `(peer, conn)`.
@@ -904,4 +973,84 @@ fn join_view(session: &JoinSession) -> JoinView {
         }
     }
     view
+}
+
+/// 005: opens channels for a redemption from a worker thread (see [`Node::opener`]).
+#[derive(Clone)]
+pub struct ChannelOpener(Arc<Shared>);
+
+impl ChannelOpener {
+    pub fn ensure_channel(
+        &self,
+        expected: Option<DeviceId>,
+        hint: Option<SocketAddrV4>,
+    ) -> Result<(DeviceId, u64), EnsureError> {
+        ensure_channel(&self.0, expected, hint)
+    }
+}
+
+fn ensure_channel(
+    shared: &Arc<Shared>,
+    expected: Option<DeviceId>,
+    hint: Option<SocketAddrV4>,
+) -> Result<(DeviceId, u64), EnsureError> {
+    if expected == Some(shared.own_id) {
+        return Err(EnsureError::SelfDevice);
+    }
+    let (known, addr) = {
+        let state = shared.lock();
+        if shared.stopping() || state.interfaces.is_empty() {
+            return Err(EnsureError::NetworkOff);
+        }
+        match expected {
+            Some(id) => {
+                let Some(pin) = state.registry.get(&id) else {
+                    return Err(EnsureError::NotPaired);
+                };
+                // Without an address the existing channel is the answer; with one, the
+                // identity at that address is checked first (FR-012).
+                if let (None, Some(entry)) = (hint, state.channels.get(&id)) {
+                    return Ok((id, entry.conn));
+                }
+                (Some(pin.public), hint.or(pin.last_addr))
+            }
+            None => (None, hint),
+        }
+    };
+    let addr = addr.ok_or(EnsureError::Unreachable)?;
+    if addr.port() == 0 || !shared.policy.allows_v4(*addr.ip()) {
+        return Err(EnsureError::Unreachable);
+    }
+    let public = match known {
+        Some(public) if hint.is_some() => {
+            // An address was given with the expected identity: probe the identity there
+            // (without revealing ours) and reuse an existing channel only if it matches.
+            let id = DeviceId::from_public(&public);
+            match dialer::probe_identity(shared, addr) {
+                Ok(presented) if presented == id => {}
+                Ok(_) => return Err(EnsureError::IdMismatch),
+                Err(error) => return Err(error),
+            }
+            if let Some(entry) = shared.lock().channels.get(&id) {
+                return Ok((id, entry.conn));
+            }
+            public
+        }
+        Some(public) => public,
+        None => {
+            let id = dialer::probe_identity(shared, addr)?;
+            if id == shared.own_id {
+                return Err(EnsureError::SelfDevice);
+            }
+            let state = shared.lock();
+            let Some(pin) = state.registry.get(&id) else {
+                return Err(EnsureError::NotPaired);
+            };
+            if let Some(entry) = state.channels.get(&id) {
+                return Ok((id, entry.conn));
+            }
+            pin.public
+        }
+    };
+    dialer::dial_now(shared, DeviceId::from_public(&public), public, addr)
 }

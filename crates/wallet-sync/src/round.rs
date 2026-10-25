@@ -21,6 +21,7 @@ use crate::ports::{
 use crate::record::{
     FileCheck, Outcome, PendingCopy, PendingStatus, Position, SyncRecord, WarningKind,
 };
+use crate::slots::{SlotGuard, TransferSlots};
 use crate::tags::{digest_matches, state_digest, tag, tag_matches};
 use crate::transfer::{Incoming, ServeStep, Serving};
 
@@ -130,7 +131,8 @@ pub struct EngineConfig {
     /// A round never lasts longer than this, progress or not (slow-loris bound; 64 MiB at
     /// 1 Mbit/s takes about 9 minutes).
     pub max_round: Duration,
-    /// Transfers service-wide (2, FR-029).
+    /// Transfers service-wide (2, FR-029). Used by [`Engine::new`] to build its own
+    /// [`TransferSlots`]; [`Engine::with_slots`] shares a host-wide counter instead (005).
     pub max_transfers: usize,
     /// Wallets per round (512, rotating window).
     pub window: usize,
@@ -215,6 +217,8 @@ struct Round {
     peer_done: bool,
     /// Our `Want` in flight (holds a transfer slot until the copy ends or is refused).
     outstanding: Option<u16>,
+    /// The transfer slot held for `outstanding` (released by dropping it).
+    want_slot: Option<SlotGuard>,
     incoming: Option<Incoming>,
     serving: Option<Serving>,
     last_progress: Duration,
@@ -265,7 +269,7 @@ pub struct Engine {
     rng: Box<dyn RngCore + Send>,
     links: BTreeMap<PeerId, Link>,
     windows: BTreeMap<PeerId, usize>,
-    transfers: usize,
+    slots: Arc<TransferSlots>,
     events: Vec<SyncEvent>,
     merges: VecDeque<MergeRequest>,
 }
@@ -280,7 +284,14 @@ fn position(local: &StateVector, peer: &StateVector) -> Position {
 }
 
 impl Engine {
+    /// An engine with its own transfer limit of `config.max_transfers` (004 behaviour).
     pub fn new(deps: EngineDeps, config: EngineConfig) -> Self {
+        let slots = TransferSlots::new(config.max_transfers);
+        Self::with_slots(deps, config, slots)
+    }
+
+    /// 005: an engine drawing transfers from `slots`, shared with the share engine (R8).
+    pub fn with_slots(deps: EngineDeps, config: EngineConfig, slots: Arc<TransferSlots>) -> Self {
         Self {
             config,
             store: deps.store,
@@ -290,7 +301,7 @@ impl Engine {
             rng: deps.rng,
             links: BTreeMap::new(),
             windows: BTreeMap::new(),
-            transfers: 0,
+            slots,
             events: Vec::new(),
             merges: VecDeque::new(),
         }
@@ -298,6 +309,11 @@ impl Engine {
 
     pub fn config(&self) -> &EngineConfig {
         &self.config
+    }
+
+    /// The transfer slots this engine draws from.
+    pub fn slots(&self) -> &Arc<TransferSlots> {
+        &self.slots
     }
 
     /// A 53-bit random id (exact in JSON numbers).
@@ -505,6 +521,7 @@ impl Engine {
             our_done: false,
             peer_done: false,
             outstanding: None,
+            want_slot: None,
             incoming: None,
             serving: None,
             last_progress: now,
@@ -608,7 +625,7 @@ impl Engine {
                     return Err(ProtocolError);
                 }
                 round.outstanding = None;
-                self.transfers = self.transfers.saturating_sub(1);
+                round.want_slot = None;
                 Self::slot_mut(round, idx)?.want = Want::Done;
                 Ok(())
             }
@@ -620,12 +637,11 @@ impl Engine {
                         incoming.abort();
                     }
                     round.outstanding = None;
-                    self.transfers = self.transfers.saturating_sub(1);
+                    round.want_slot = None;
                     Self::slot_mut(round, idx)?.want = Want::Done;
                     Ok(())
                 } else if round.serving.as_ref().is_some_and(|s| s.idx == idx) {
-                    round.serving = None;
-                    self.transfers = self.transfers.saturating_sub(1);
+                    round.serving = None; // releases its slot
                     Ok(())
                 } else {
                     Err(ProtocolError)
@@ -733,6 +749,7 @@ impl Engine {
             our_done: false,
             peer_done: false,
             outstanding: None,
+            want_slot: None,
             incoming: None,
             serving: None,
             last_progress: self.mono.now(),
@@ -823,9 +840,9 @@ impl Engine {
             Ok(_) => return refuse(link, RefuseReason::Changed),
             Err(_) => return refuse(link, RefuseReason::Storage),
         }
-        if self.transfers >= self.config.max_transfers {
+        let Some(guard) = self.slots.try_take() else {
             return refuse(link, RefuseReason::Busy);
-        }
+        };
         let Ok((size, reader)) = self.source.open(&record.wallet_name) else {
             return refuse(link, RefuseReason::Storage);
         };
@@ -835,14 +852,13 @@ impl Engine {
         if !(MIN_COPY..=MAX_COPY).contains(&size32) {
             return refuse(link, RefuseReason::NotOfferable);
         }
-        self.transfers += 1;
         link.send(&Ctl::CopyStart {
             round: number,
             idx,
             size: size32,
         });
         if let Some(round) = link.round.as_mut() {
-            round.serving = Some(Serving::new(idx, size, reader, record.digest));
+            round.serving = Some(Serving::new(idx, size, reader, record.digest).holding(guard));
         }
         Ok(())
     }
@@ -941,7 +957,7 @@ impl Engine {
             return Err(ProtocolError);
         }
         round.outstanding = None;
-        self.transfers = self.transfers.saturating_sub(1);
+        round.want_slot = None;
         Self::slot_mut(round, idx)?.want = Want::Done;
         let name = round.slots[usize::from(idx)].name.clone();
         let finished = incoming.writer.take().map(|w| w.finish());
@@ -1037,8 +1053,8 @@ impl Engine {
         }
         if round.outstanding.is_none() && round.incoming.is_none() {
             if let Some(idx) = round.slots.iter().position(|s| s.want == Want::Wanted) {
-                if self.transfers < self.config.max_transfers {
-                    self.transfers += 1;
+                if let Some(guard) = self.slots.try_take() {
+                    round.want_slot = Some(guard);
                     round.slots[idx].want = Want::Requested;
                     round.outstanding = Some(idx as u16);
                     link.send(&Ctl::Want {
@@ -1116,12 +1132,9 @@ impl Engine {
         if let Some(mut incoming) = round.incoming.take() {
             incoming.abort();
         }
-        if round.outstanding.take().is_some() {
-            self.transfers = self.transfers.saturating_sub(1);
-        }
-        if round.serving.take().is_some() {
-            self.transfers = self.transfers.saturating_sub(1);
-        }
+        round.outstanding = None;
+        round.want_slot = None;
+        round.serving = None;
         let at = self.wall.unix_now();
         for slot in round.slots.iter().filter(|s| s.matched) {
             let Some(wallet) = slot.wallet else { continue };
@@ -1193,8 +1206,7 @@ impl Engine {
             match serving.next() {
                 ServeStep::Chunk(bytes) => out.push(Frame::Data(bytes)),
                 step => {
-                    round.serving = None;
-                    self.transfers = self.transfers.saturating_sub(1);
+                    round.serving = None; // releases its slot
                     serving_ended = true;
                     let ctl = match step {
                         ServeStep::End => Ctl::CopyEnd { round: number, idx },
@@ -1366,6 +1378,6 @@ impl Engine {
 
     #[cfg(feature = "testkit")]
     pub fn transfers_active(&self) -> usize {
-        self.transfers
+        self.slots.active()
     }
 }

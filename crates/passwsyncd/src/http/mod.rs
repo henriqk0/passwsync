@@ -3,6 +3,7 @@
 
 pub mod api;
 pub mod api_network;
+pub mod api_share;
 pub mod api_sync;
 pub mod guard;
 pub mod pages;
@@ -31,6 +32,8 @@ pub struct AppState {
     pub net: Arc<crate::net_runtime::NetRuntime>,
     /// 004: wallet sync (inactive while networking is off).
     pub sync: Arc<crate::sync_runtime::SyncRuntime>,
+    /// 005: wallet sharing.
+    pub share: Arc<crate::share_runtime::ShareRuntime>,
 }
 
 impl AppState {

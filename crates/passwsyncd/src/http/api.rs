@@ -161,7 +161,8 @@ fn status_of(error: ServiceError) -> u16 {
         | ServiceError::EntryConflicted
         | ServiceError::TooManyConflicts
         | ServiceError::PasswordConflict
-        | ServiceError::NotConflicted => 409,
+        | ServiceError::NotConflicted
+        | ServiceError::AlreadyPresent => 409,
         ServiceError::WalletLocked => 423,
         ServiceError::InvalidPasswordOrCorrupted
         | ServiceError::MalformedFile
@@ -256,6 +257,9 @@ pub fn handle(state: &AppState, req: &Request, path: &str) -> Response {
         return response;
     }
     if let Some(response) = super::api_sync::handle(state, req, path) {
+        return response;
+    }
+    if let Some(response) = super::api_share::handle(state, req, path) {
         return response;
     }
     let Some(route) = route(path) else {

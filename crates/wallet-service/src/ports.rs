@@ -79,6 +79,12 @@ pub trait PendingCopies: Send + Sync {
     fn upgraded(&self, wallet: &WalletName);
 }
 
+/// 005: told about every lock (manual, all, idle, suspend, stop), after the wallet is locked
+/// and its keys wiped, outside the service's locks (research R7).
+pub trait LockObserver: Send + Sync {
+    fn locked(&self, name: &WalletName);
+}
+
 #[cfg(feature = "testkit")]
 pub mod testkit {
     //! In-memory fakes of the ports. Enabled by the `testkit` feature.

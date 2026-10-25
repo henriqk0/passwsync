@@ -37,6 +37,8 @@ pub enum ServiceError {
     NotConflicted,
     /// 004: no such version index.
     InvalidVersionIndex,
+    /// 005: the received wallet is already held here (the host knows its local name).
+    AlreadyPresent,
     Storage,
     Internal,
 }
@@ -67,6 +69,7 @@ impl ServiceError {
             Self::PasswordConflict => "password_conflict",
             Self::NotConflicted => "not_conflicted",
             Self::InvalidVersionIndex => "invalid_version",
+            Self::AlreadyPresent => "already_present",
             Self::Storage => "storage_error",
             Self::Internal => "internal_error",
         }
@@ -104,6 +107,7 @@ impl ServiceError {
             }
             Self::NotConflicted => "this credential has no conflict",
             Self::InvalidVersionIndex => "no such version of this credential",
+            Self::AlreadyPresent => "this wallet is already on this device",
             Self::Storage => "the wallet could not be saved; the change was not applied",
             Self::Internal => "internal error",
         }

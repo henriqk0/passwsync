@@ -26,6 +26,8 @@ pub const PAIR_PROLOGUE: &[u8] = b"passwsync-pair-v1";
 pub const CHANNEL_PROLOGUE: &[u8] = b"passwsync-channel-v1";
 /// 004: prologue of channel protocol v2 (binds the Hello version, R7).
 pub const CHANNEL_PROLOGUE_V2: &[u8] = b"passwsync-channel-v2";
+/// 005: channel protocol v3 (sync + share), bound into the Noise prologue like v2.
+pub const CHANNEL_PROLOGUE_V3: &[u8] = b"passwsync-channel-v3";
 pub const SPAKE_LEN: usize = 33;
 /// Every read step other than the person's decision (FR-030).
 pub const STEP_TIMEOUT: Duration = Duration::from_secs(10);

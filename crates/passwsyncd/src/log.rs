@@ -125,6 +125,121 @@ impl SyncRoundClass {
     }
 }
 
+/// 005: how an invitation ended (closed set).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InvitationEnd {
+    Cancelled,
+    Replaced,
+    Locked,
+    Revoked,
+    Expired,
+    Rejected,
+    Completed,
+    Failed,
+}
+
+impl InvitationEnd {
+    pub fn word(self) -> &'static str {
+        match self {
+            Self::Cancelled => "cancelled",
+            Self::Replaced => "replaced",
+            Self::Locked => "locked",
+            Self::Revoked => "revoked",
+            Self::Expired => "expired",
+            Self::Rejected => "rejected",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+/// 005: why a redemption was refused by the sender (closed set).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RedeemRefusal {
+    WrongCode,
+    NotRecipient,
+    NoInvitation,
+    Expired,
+    Used,
+    Cancelled,
+}
+
+impl RedeemRefusal {
+    pub fn word(self) -> &'static str {
+        match self {
+            Self::WrongCode => "wrong-code",
+            Self::NotRecipient => "not-recipient",
+            Self::NoInvitation => "no-invitation",
+            Self::Expired => "expired",
+            Self::Used => "used",
+            Self::Cancelled => "cancelled",
+        }
+    }
+}
+
+/// 005: why a share transfer or receive failed (closed set).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShareFailure {
+    Invalid,
+    Rejected,
+    Cancelled,
+    Expired,
+    Busy,
+    Storage,
+    TooLarge,
+    SenderError,
+    RecipientCancelled,
+    ReceivedLimit,
+    ChannelLost,
+    Timeout,
+    Unreachable,
+    Unsupported,
+    IdMismatch,
+    Protocol,
+}
+
+impl ShareFailure {
+    pub fn word(self) -> &'static str {
+        match self {
+            Self::Invalid => "invalid",
+            Self::Rejected => "rejected",
+            Self::Cancelled => "cancelled",
+            Self::Expired => "expired",
+            Self::Busy => "busy",
+            Self::Storage => "storage",
+            Self::TooLarge => "too-large",
+            Self::SenderError => "sender-error",
+            Self::RecipientCancelled => "recipient-cancelled",
+            Self::ReceivedLimit => "received-limit",
+            Self::ChannelLost => "channel-lost",
+            Self::Timeout => "timeout",
+            Self::Unreachable => "unreachable",
+            Self::Unsupported => "unsupported",
+            Self::IdMismatch => "id-mismatch",
+            Self::Protocol => "protocol",
+        }
+    }
+}
+
+/// 005: why a received wallet was deleted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DiscardReason {
+    Person,
+    Expired,
+    Revoked,
+}
+
+/// 005: start-up clean-up classes of `received/` (step 5e).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CleanClass {
+    Partial,
+    Orphan,
+    Corrupted,
+    Expired,
+    Unpinned,
+    Excess,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RejectionCounts {
     pub host: u64,
@@ -247,6 +362,58 @@ pub enum LogEvent<'a> {
         wallet: &'a WalletName,
     },
     SyncPeerLegacy {
+        fingerprint: &'a Fingerprint,
+    },
+    // --- 005 sharing events (contracts/host-runtime-share.md); peers by fingerprint only ---
+    ShareInvitationCreated {
+        fingerprint: &'a Fingerprint,
+    },
+    ShareInvitationEnded(InvitationEnd),
+    ShareRedeemRefused {
+        fingerprint: &'a Fingerprint,
+        why: RedeemRefusal,
+    },
+    ShareRedeemed {
+        fingerprint: &'a Fingerprint,
+    },
+    ShareAccepted {
+        fingerprint: &'a Fingerprint,
+    },
+    ShareTransferCompleted {
+        fingerprint: &'a Fingerprint,
+        bytes: u64,
+    },
+    ShareTransferAborted {
+        fingerprint: &'a Fingerprint,
+        reason: ShareFailure,
+        bytes: u64,
+    },
+    ShareReceiveStarted {
+        fingerprint: &'a Fingerprint,
+    },
+    ShareReceived {
+        fingerprint: &'a Fingerprint,
+        bytes: u64,
+    },
+    ShareReceiveFailed {
+        fingerprint: &'a Fingerprint,
+        reason: ShareFailure,
+    },
+    ReceivedOpened {
+        fingerprint: &'a Fingerprint,
+    },
+    ReceivedAlreadyPresent {
+        fingerprint: &'a Fingerprint,
+    },
+    ReceivedDiscarded {
+        fingerprint: &'a Fingerprint,
+        why: DiscardReason,
+    },
+    ReceivedCleaned {
+        class: CleanClass,
+        count: usize,
+    },
+    SharePeerUnsupported {
         fingerprint: &'a Fingerprint,
     },
 }
@@ -409,6 +576,74 @@ impl fmt::Display for LogEvent<'_> {
                 write!(f, "wallet upgraded to format 2 wallet={wallet}")
             }
             Self::SyncPeerLegacy { fingerprint } => write!(f, "sync peer legacy {fingerprint}"),
+            Self::ShareInvitationCreated { fingerprint } => {
+                write!(f, "share invitation created recipient={fingerprint}")
+            }
+            Self::ShareInvitationEnded(end) => {
+                write!(f, "share invitation ended ({})", end.word())
+            }
+            Self::ShareRedeemRefused { fingerprint, why } => write!(
+                f,
+                "share redeem refused peer={fingerprint} ({})",
+                why.word()
+            ),
+            Self::ShareRedeemed { fingerprint } => write!(f, "share redeemed peer={fingerprint}"),
+            Self::ShareAccepted { fingerprint } => write!(f, "share accepted peer={fingerprint}"),
+            Self::ShareTransferCompleted { fingerprint, bytes } => write!(
+                f,
+                "share transfer completed peer={fingerprint} bytes={bytes}"
+            ),
+            Self::ShareTransferAborted {
+                fingerprint,
+                reason,
+                bytes,
+            } => write!(
+                f,
+                "share transfer aborted peer={fingerprint} ({}) bytes={bytes}",
+                reason.word()
+            ),
+            Self::ShareReceiveStarted { fingerprint } => {
+                write!(f, "share receive started peer={fingerprint}")
+            }
+            Self::ShareReceived { fingerprint, bytes } => {
+                write!(f, "share received peer={fingerprint} bytes={bytes}")
+            }
+            Self::ShareReceiveFailed {
+                fingerprint,
+                reason,
+            } => write!(
+                f,
+                "share receive failed peer={fingerprint} ({})",
+                reason.word()
+            ),
+            Self::ReceivedOpened { fingerprint } => {
+                write!(f, "received wallet opened peer={fingerprint}")
+            }
+            Self::ReceivedAlreadyPresent { fingerprint } => {
+                write!(f, "received wallet already present peer={fingerprint}")
+            }
+            Self::ReceivedDiscarded { fingerprint, why } => {
+                let word = match why {
+                    DiscardReason::Person => "person",
+                    DiscardReason::Expired => "expired",
+                    DiscardReason::Revoked => "revoked",
+                };
+                write!(f, "received wallet discarded peer={fingerprint} ({word})")
+            }
+            Self::ReceivedCleaned { class, count } => {
+                let word = match class {
+                    CleanClass::Partial => "partial",
+                    CleanClass::Orphan => "orphan",
+                    CleanClass::Corrupted => "corrupted",
+                    CleanClass::Expired => "expired",
+                    CleanClass::Unpinned => "unpinned",
+                    CleanClass::Excess => "excess",
+                };
+                write!(f, "received cleaned ({word}) count={count}")
+            }
+            Self::SharePeerUnsupported { fingerprint } => {
+                write!(f, "share peer unsupported {fingerprint}")
+            }
         }
     }
 }

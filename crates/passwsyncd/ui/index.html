@@ -34,8 +34,15 @@
   <section id="wallet-view" class="panel" aria-labelledby="wallet-title" hidden>
     <div class="row heading">
       <h2 id="wallet-title"></h2>
+      <button id="share-wallet" type="button" class="secondary">Share</button>
       <button id="lock-wallet" type="button" class="secondary">Lock</button>
     </div>
+    <section id="share-dialog" class="details" aria-labelledby="share-dialog-heading" hidden>
+      <h3 id="share-dialog-heading" tabindex="-1">Share this wallet</h3>
+      <p class="muted small">Choose the paired device that receives an encrypted copy. The master password is never sent: the other device needs it to open the wallet.</p>
+      <ul id="share-device-list" class="entry-list" aria-label="Paired devices to share with"></ul>
+      <button id="share-dialog-close" type="button" class="secondary">Close</button>
+    </section>
     <section id="sync-details" class="details" aria-labelledby="sync-details-heading">
       <h3 id="sync-details-heading">Sync</h3>
       <p id="wallet-sync-state" class="muted" role="status" aria-live="polite"></p>
@@ -167,6 +174,42 @@
         <button type="submit">Join</button>
       </form>
       <p id="join-state" class="muted" role="status" aria-live="polite"></p>
+    </section>
+    <section aria-labelledby="sharing-heading">
+      <h3 id="sharing-heading">Sharing</h3>
+      <p id="share-unavailable" class="muted small" role="status" hidden></p>
+      <div id="share-panel" class="stack" hidden>
+        <h4 id="share-panel-heading">Invitation</h4>
+        <p id="share-state" class="muted" role="status" aria-live="polite"></p>
+        <p class="pairing-code"><code id="share-code"></code></p>
+        <div id="share-qr" class="qr" aria-label="QR code for the invitation"></div>
+        <p id="share-countdown" class="countdown"></p>
+        <div id="share-decision" class="stack" hidden>
+          <p id="share-decision-text"></p>
+          <p class="muted small">Accept only if this is the device you chose and its fingerprint matches.</p>
+          <div class="row">
+            <button id="share-accept" type="button">Accept</button>
+            <button id="share-reject" type="button" class="danger">Reject</button>
+          </div>
+        </div>
+        <p id="share-explain" class="muted small" hidden></p>
+        <button id="share-cancel" type="button" class="secondary">Cancel</button>
+      </div>
+      <h4 id="receive-heading">Receive a wallet</h4>
+      <form id="receive-form" class="stack" autocomplete="off">
+        <label for="receive-sender">Sender (a paired device)</label>
+        <select id="receive-sender"></select>
+        <label for="receive-address">Or the sender's address (for example 192.168.1.5:27472)</label>
+        <input id="receive-address" type="text">
+        <label for="receive-code">Invitation code shown on the sender</label>
+        <input id="receive-code" type="text" inputmode="numeric" required>
+        <button type="submit">Receive</button>
+      </form>
+      <p id="receive-state" class="muted" role="status" aria-live="polite"></p>
+      <button id="receive-cancel" type="button" class="secondary" hidden>Cancel</button>
+      <h4 id="received-heading">Received wallets</h4>
+      <ul id="received-list" class="entry-list" aria-labelledby="received-heading"></ul>
+      <ul id="share-notices" class="warnings-list" aria-label="Sharing notices"></ul>
     </section>
     <section aria-labelledby="paired-heading">
       <h3 id="paired-heading">Paired devices</h3>

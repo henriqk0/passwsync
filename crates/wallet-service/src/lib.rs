@@ -3,6 +3,7 @@
 //! every external interaction goes through the ports in this crate.
 #![forbid(unsafe_code)]
 
+mod adopt;
 mod error;
 mod name;
 mod ports;
@@ -10,12 +11,14 @@ mod registry;
 mod sessions;
 mod sync;
 
+pub use adopt::AdoptVerdict;
 pub use error::ServiceError;
 pub use name::{InvalidName, WalletName};
 #[cfg(feature = "testkit")]
 pub use ports::testkit;
 pub use ports::{
-    ElapsedClock, PeerRef, PendingCopies, PendingOutcome, PendingRef, UnlockFacts, WalletDirectory,
+    ElapsedClock, LockObserver, PeerRef, PendingCopies, PendingOutcome, PendingRef, UnlockFacts,
+    WalletDirectory,
 };
 pub use registry::{
     EntrySummary, EntryView, Field, KDF_MEMORY_CAP_KIB, Service, ServiceConfig, UnlockOutcome,

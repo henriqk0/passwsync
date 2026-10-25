@@ -10,6 +10,7 @@ use vault_core::{StateVector, WalletId};
 
 use crate::codec::MAX_FRAGMENT;
 use crate::ports::IncomingCopy;
+use crate::slots::SlotGuard;
 
 /// What the sender's next step produces.
 pub(crate) enum ServeStep {
@@ -28,6 +29,8 @@ pub(crate) struct Serving {
     reader: Box<dyn Read + Send>,
     hasher: Sha256,
     expected: [u8; 32],
+    /// The transfer slot this serve holds (released when the serve is dropped).
+    _slot: Option<SlotGuard>,
 }
 
 impl Serving {
@@ -38,7 +41,14 @@ impl Serving {
             reader,
             hasher: Sha256::new(),
             expected,
+            _slot: None,
         }
+    }
+
+    /// Holds `slot` for as long as this serve lives.
+    pub fn holding(mut self, slot: SlotGuard) -> Self {
+        self._slot = Some(slot);
+        self
     }
 
     fn read_full(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {

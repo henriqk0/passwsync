@@ -11,7 +11,7 @@ use crate::error::Error;
 use crate::identity::{DeviceId, DeviceKey};
 use crate::name::DeviceName;
 use crate::noise;
-use crate::pairing::{CHANNEL_PROLOGUE, CHANNEL_PROLOGUE_V2, NOISE_CHANNEL};
+use crate::pairing::{CHANNEL_PROLOGUE, CHANNEL_PROLOGUE_V2, CHANNEL_PROLOGUE_V3, NOISE_CHANNEL};
 use crate::wire::{
     HelloKind, HelloVersion, MAX_FRAME, Payload, hello_versioned, parse_hello_versioned,
 };
@@ -81,9 +81,19 @@ impl Channel {
         self.closed
     }
 
-    /// 004: whether this channel was negotiated with Hello v2 (sync frames allowed).
+    /// 004: whether this channel was negotiated with Hello v2 or v3 (sync frames allowed).
     pub fn sync_enabled(&self) -> bool {
-        self.version == HelloVersion::V2
+        matches!(self.version, HelloVersion::V2 | HelloVersion::V3)
+    }
+
+    /// 005: whether this channel was negotiated with Hello v3 (share frames allowed).
+    pub fn share_enabled(&self) -> bool {
+        self.version == HelloVersion::V3
+    }
+
+    /// The Hello version this channel was negotiated with.
+    pub fn version(&self) -> HelloVersion {
+        self.version
     }
 
     /// 004: the Noise handshake hash (32 bytes), equal on both ends, different per session.
@@ -93,15 +103,17 @@ impl Channel {
     }
 
     /// 004: encrypts a `SyncCtl` or `CopyData` payload; only on a sync-enabled channel.
+    /// 005: also `ShareMsg` / `ShareData`, only on a share-enabled (v3) channel.
     pub fn seal_sync(&mut self, payload: &Payload) -> Result<Vec<u8>, ChannelError> {
+        let chunk_ok = |len: usize| (1..=crate::wire::MAX_SYNC_CHUNK).contains(&len);
         let valid = match payload {
-            Payload::SyncCtl { fragment, .. } => {
-                (1..=crate::wire::MAX_SYNC_CHUNK).contains(&fragment.len())
-            }
-            Payload::CopyData { bytes } => (1..=crate::wire::MAX_SYNC_CHUNK).contains(&bytes.len()),
+            Payload::SyncCtl { fragment, .. } => chunk_ok(fragment.len()) && self.sync_enabled(),
+            Payload::CopyData { bytes } => chunk_ok(bytes.len()) && self.sync_enabled(),
+            Payload::ShareMsg { body } => chunk_ok(body.len()) && self.share_enabled(),
+            Payload::ShareData { bytes } => chunk_ok(bytes.len()) && self.share_enabled(),
             _ => false,
         };
-        if !valid || !self.sync_enabled() {
+        if !valid {
             return Err(ChannelError::Protocol);
         }
         self.seal_bytes(&payload.encode())
@@ -159,10 +171,10 @@ impl Channel {
             .transport
             .read_message(frame, buf.as_mut())
             .map_err(|_| ChannelError::Crypto)?;
-        let decoded = if self.sync_enabled() {
-            Payload::decode_v2(&buf[..n])
-        } else {
-            Payload::decode(&buf[..n])
+        let decoded = match self.version {
+            HelloVersion::V3 => Payload::decode_v3(&buf[..n]),
+            HelloVersion::V2 => Payload::decode_v2(&buf[..n]),
+            HelloVersion::V1 => Payload::decode(&buf[..n]),
         };
         match decoded {
             Ok(
@@ -170,18 +182,21 @@ impl Channel {
                 | Payload::NameUpdate { .. }
                 | Payload::Close { .. }
                 | Payload::SyncCtl { .. }
-                | Payload::CopyData { .. }),
+                | Payload::CopyData { .. }
+                | Payload::ShareMsg { .. }
+                | Payload::ShareData { .. }),
             ) => Ok(payload),
             _ => Err(ChannelError::Protocol),
         }
     }
 }
 
-/// The prologue for `hello` (v1 or v2); an unknown Hello falls back to v1, which then fails
-/// the handshake against any real peer.
+/// The prologue for `hello` (v1, v2 or v3); an unknown Hello falls back to v1, which then
+/// fails the handshake against any real peer.
 fn prologue(hello: &[u8]) -> Vec<u8> {
     let base = match parse_hello_versioned(hello) {
         Ok((_, HelloVersion::V2)) => CHANNEL_PROLOGUE_V2,
+        Ok((_, HelloVersion::V3)) => CHANNEL_PROLOGUE_V3,
         _ => CHANNEL_PROLOGUE,
     };
     [base, hello].concat()

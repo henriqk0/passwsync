@@ -77,3 +77,14 @@ bytes). Trailing bytes → protocol error.
 
 Revocation sends nothing (FR-034): the revoking side just closes the connection, and the
 revoked device learns it from `Refused` on its next attempt.
+
+## Addendum (005): channel protocol v3
+
+Feature 005 adds channel Hello version 3, `PWSC || 0x03 || 0x01`, with Noise prologue
+`passwsync-channel-v3 || Hello`. A v3 channel is a v2 (004 sync) channel plus the payload types
+0x30 `ShareMsg` and 0x31 `ShareData` (1..=1000 bytes each); on v1/v2 channels they remain
+protocol errors. Responders accept Hello v1, v2 and v3; the 003 `parse_hello` stays v1-only and
+pairing Hello stays `PWSC || 0x01 || 0x02`. A dialer starts at v3 and lowers its per-peer
+maximum v3 -> v2 -> v1 when the connection closes before Noise message 2, retrying the higher
+version after 24 hours or a restart. Details:
+[005 share-protocol.md](../../005-wallet-sharing/contracts/share-protocol.md).

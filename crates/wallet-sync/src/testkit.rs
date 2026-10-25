@@ -8,8 +8,8 @@ use std::time::Duration;
 use vault_core::WalletId;
 
 use crate::ports::{
-    IncomingCopy, MergeOutcome, MergeRequest, Merger, MonoClock, PeerId, StoreError, SyncStore,
-    WallClock, WalletSource,
+    IncomingCopy, MergeOutcome, MergeRequest, Merger, MonoClock, PeerId, ReceivedMeta,
+    ReceivedStore, StoreError, SyncStore, WallClock, WalletSource,
 };
 use crate::record::{SyncRecord, sha256};
 
@@ -303,5 +303,162 @@ impl Merger for FakeMerger {
         lock(&self.script)
             .pop_front()
             .unwrap_or(MergeOutcome::Unchanged)
+    }
+}
+
+/// Where an injected failure of [`InMemoryReceivedStore`] strikes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ReceivedStep {
+    Begin,
+    Append,
+    Finish,
+    List,
+    Read,
+    Delete,
+}
+
+#[derive(Default)]
+struct ReceivedState {
+    complete: BTreeMap<[u8; 16], (ReceivedMeta, Vec<u8>)>,
+    partial: BTreeMap<[u8; 16], (ReceivedMeta, Vec<u8>)>,
+    failures: BTreeMap<ReceivedStep, StoreError>,
+}
+
+impl ReceivedState {
+    fn fail(&mut self, step: ReceivedStep) -> Result<(), StoreError> {
+        match self.failures.remove(&step) {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    }
+}
+
+/// Received-wallet store in memory with fault injection. Clones share the data.
+#[derive(Clone, Default)]
+pub struct InMemoryReceivedStore(Arc<Mutex<ReceivedState>>);
+
+impl InMemoryReceivedStore {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The next operation at `step` fails with `error`.
+    pub fn fail_once(&self, step: ReceivedStep, error: StoreError) {
+        lock(&self.0).failures.insert(step, error);
+    }
+
+    pub fn partial_count(&self) -> usize {
+        lock(&self.0).partial.len()
+    }
+
+    /// Puts a complete entry in place (e.g. received in an earlier run).
+    pub fn put(&self, meta: ReceivedMeta, bytes: Vec<u8>) {
+        lock(&self.0).complete.insert(meta.id, (meta, bytes));
+    }
+
+    /// Replaces the stored bytes of an entry (e.g. corruption on disk).
+    pub fn corrupt(&self, id: [u8; 16], bytes: Vec<u8>) {
+        if let Some(entry) = lock(&self.0).complete.get_mut(&id) {
+            entry.1 = bytes;
+        }
+    }
+}
+
+impl ReceivedStore for InMemoryReceivedStore {
+    fn list(&self) -> Result<Vec<ReceivedMeta>, StoreError> {
+        let mut state = lock(&self.0);
+        state.fail(ReceivedStep::List)?;
+        let mut out: Vec<ReceivedMeta> = state.complete.values().map(|(m, _)| m.clone()).collect();
+        out.sort_by_key(|m| (m.received_at, m.id));
+        Ok(out)
+    }
+
+    fn begin(
+        &self,
+        id: [u8; 16],
+        sender: PeerId,
+        received_at: u64,
+    ) -> Result<Box<dyn IncomingCopy>, StoreError> {
+        let mut state = lock(&self.0);
+        state.fail(ReceivedStep::Begin)?;
+        let meta = ReceivedMeta {
+            id,
+            sender,
+            received_at,
+            size: 0,
+        };
+        state.partial.insert(id, (meta, Vec::new()));
+        Ok(Box::new(MemoryReceiving {
+            store: self.clone(),
+            id,
+            done: false,
+        }))
+    }
+
+    fn read(&self, id: [u8; 16]) -> Result<Vec<u8>, StoreError> {
+        let mut state = lock(&self.0);
+        state.fail(ReceivedStep::Read)?;
+        state
+            .complete
+            .get(&id)
+            .map(|(_, b)| b.clone())
+            .ok_or(StoreError::NotFound)
+    }
+
+    fn delete(&self, id: [u8; 16]) -> Result<(), StoreError> {
+        let mut state = lock(&self.0);
+        state.fail(ReceivedStep::Delete)?;
+        state
+            .complete
+            .remove(&id)
+            .map(|_| ())
+            .ok_or(StoreError::NotFound)
+    }
+}
+
+struct MemoryReceiving {
+    store: InMemoryReceivedStore,
+    id: [u8; 16],
+    done: bool,
+}
+
+impl IncomingCopy for MemoryReceiving {
+    fn append(&mut self, bytes: &[u8]) -> Result<(), StoreError> {
+        let mut state = lock(&self.store.0);
+        if let Err(error) = state.fail(ReceivedStep::Append) {
+            state.partial.remove(&self.id);
+            self.done = true;
+            return Err(error);
+        }
+        state
+            .partial
+            .get_mut(&self.id)
+            .ok_or(StoreError::Io)?
+            .1
+            .extend_from_slice(bytes);
+        Ok(())
+    }
+
+    fn finish(mut self: Box<Self>) -> Result<(), StoreError> {
+        self.done = true;
+        let mut state = lock(&self.store.0);
+        let (mut meta, bytes) = state.partial.remove(&self.id).ok_or(StoreError::Io)?;
+        state.fail(ReceivedStep::Finish)?;
+        meta.size = bytes.len() as u64;
+        state.complete.insert(self.id, (meta, bytes));
+        Ok(())
+    }
+
+    fn abort(mut self: Box<Self>) {
+        self.done = true;
+        lock(&self.store.0).partial.remove(&self.id);
+    }
+}
+
+impl Drop for MemoryReceiving {
+    fn drop(&mut self) {
+        if !self.done {
+            lock(&self.store.0).partial.remove(&self.id);
+        }
     }
 }

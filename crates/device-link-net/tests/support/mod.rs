@@ -1,6 +1,8 @@
 //! Loopback nodes for the adapter tests (testkit address policy, fake loopback interface).
 #![allow(dead_code)]
 
+pub mod old_peer;
+
 use std::net::{SocketAddrV4, TcpListener, UdpSocket};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};

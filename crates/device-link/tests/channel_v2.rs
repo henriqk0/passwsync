@@ -38,7 +38,8 @@ fn hello_v2_bytes_and_parsing() {
     );
     for bad in [
         &b"PWSC\x02\x02"[..],
-        b"PWSC\x03\x01",
+        // 005 changed this from `PWSC\x03\x01`, which is now the valid channel Hello v3.
+        b"PWSC\x04\x01",
         b"PWSC\x02",
         b"PWSC\x02\x01\x00",
     ] {

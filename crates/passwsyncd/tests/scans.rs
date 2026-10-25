@@ -344,3 +344,50 @@ fn sync_modules_print_nothing_and_have_no_unsafe_code() {
         assert!(!text.contains("log.fatal("), "{file}");
     }
 }
+
+// --- 005 T087: the sharing modules print nothing, use no unsafe code and never derive
+// `Debug` for a type holding a code, proof or password ---
+
+/// `(derive line, struct body)` for every struct in `text`.
+fn structs(text: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for (pos, _) in text.match_indices("struct ") {
+        let before = &text[..pos];
+        let derive = before
+            .rfind("#[derive(")
+            .filter(|d| !before[*d..].contains('}'))
+            .map(|d| before[d..].lines().next().unwrap_or("").to_string())
+            .unwrap_or_default();
+        let rest = &text[pos..];
+        let end = rest.find("\n}").unwrap_or(rest.len());
+        out.push((derive, rest[..end].to_string()));
+    }
+    out
+}
+
+#[test]
+fn share_modules_print_nothing_and_never_debug_secrets() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    for file in [
+        "share_runtime.rs",
+        "share_store.rs",
+        "http/api_share.rs",
+        "qr.rs",
+    ] {
+        let text = fs::read_to_string(root.join(file)).unwrap();
+        for needle in ["unsafe ", "println!", "eprintln!", "dbg!", "print!("] {
+            assert!(!text.contains(needle), "{needle} in {file}");
+        }
+        assert!(!text.contains("log.fatal("), "{file}");
+        for (derive, body) in structs(&text) {
+            let secret = ["code:", "password:", "proof:", "rid:"]
+                .iter()
+                .any(|f| body.contains(f));
+            assert!(
+                !(secret && derive.contains("Debug")),
+                "{file}: Debug derived for a secret-holding type: {}",
+                body.lines().next().unwrap_or("")
+            );
+        }
+    }
+}

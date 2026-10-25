@@ -50,16 +50,31 @@ pub fn connect(a: &DeviceKey, b: &DeviceKey) -> Ends {
 }
 
 /// 004: a full channel handshake with Hello version 2 (sync-enabled channel).
+#[allow(dead_code)]
 pub fn connect_v2(a: &DeviceKey, b: &DeviceKey) -> Ends {
-    use device_link::wire::{HelloVersion, parse_hello_versioned};
+    connect_version(a, b, device_link::wire::HelloVersion::V2)
+}
+
+/// 005: a full channel handshake with Hello version 3 (sync- and share-enabled channel).
+#[allow(dead_code)]
+pub fn connect_v3(a: &DeviceKey, b: &DeviceKey) -> Ends {
+    connect_version(a, b, device_link::wire::HelloVersion::V3)
+}
+
+/// A full channel handshake with the given Hello version.
+pub fn connect_version(
+    a: &DeviceKey,
+    b: &DeviceKey,
+    version: device_link::wire::HelloVersion,
+) -> Ends {
+    use device_link::wire::parse_hello_versioned;
     let mut wire = Vec::new();
-    let mut dialer =
-        ChannelDialer::start_version(a, *b.public(), name("Laptop"), HelloVersion::V2).unwrap();
+    let mut dialer = ChannelDialer::start_version(a, *b.public(), name("Laptop"), version).unwrap();
     let out = dialer.outgoing();
     assert_eq!(out.len(), 2, "Hello and msg1");
     assert_eq!(
         parse_hello_versioned(&out[0]).unwrap(),
-        (HelloKind::Channel, HelloVersion::V2)
+        (HelloKind::Channel, version)
     );
     wire.extend(out.clone());
     let mut responder = ChannelResponder::new(b, name("Phone"), &out[0]);
