@@ -18,7 +18,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use device_link::identity::DeviceId;
-use device_link::wire::Payload;
+use device_link::wire::{HelloVersion, Payload};
 use device_link_net::SyncFrameSink;
 use rand_core::OsRng;
 use sha2::{Digest, Sha256};
@@ -36,10 +36,13 @@ use wallet_sync::ports::{
 use wallet_sync::record::{SyncRecord, WarningKind, sha256};
 use wallet_sync::round::{Engine, EngineConfig, EngineDeps, Frame, RoundClass, SyncEvent};
 use wallet_sync::sched::{Scheduler, SyncTiming};
+use wallet_sync::slots::TransferSlots;
 use wallet_sync::status::{RecordView, StatusInput, WalletSyncState, last_synced_at, wallet_state};
 
 use crate::log::{Log, LogEvent, SyncRoundClass};
 use crate::net_runtime::NetRuntime;
+use crate::share_runtime::ShareCore;
+use crate::share_store::FsReceivedStore;
 use crate::sync_store::FileSyncStore;
 
 const THREAD_STACK: usize = 256 * 1024;
@@ -212,6 +215,8 @@ pub struct SyncShared {
     log: Log,
     timing: SyncTiming,
     wall: Arc<dyn WallClock>,
+    /// 005: the share engine (its frames use this sink and this sender thread).
+    pub(crate) share: Arc<ShareCore>,
 }
 
 impl SyncShared {
@@ -230,6 +235,43 @@ impl SyncShared {
     fn notify(&self) {
         lock(&self.signals).work = true;
         self.wake.notify_all();
+    }
+
+    /// 005: wakes the sender thread (share frames were queued).
+    pub(crate) fn notify_work(&self) {
+        self.notify();
+    }
+
+    /// 005: the local name of a held wallet with this wallet id, known from its 004 sync
+    /// record (wallets never unlocked since 004 have no record: the residual case of R10).
+    pub(crate) fn held_wallet(&self, wallet: &WalletId) -> Option<String> {
+        let record = self.store.load(wallet).ok().flatten()?;
+        let present = self
+            .source
+            .digest(&record.wallet_name)
+            .ok()
+            .flatten()
+            .is_some();
+        present.then_some(record.wallet_name)
+    }
+
+    /// 005: a received wallet was opened: its new record gets `peer_mark[sender]` = the
+    /// authenticated state of the received file (only while sync runs and the record exists).
+    pub(crate) fn mark_received(&self, wallet: &WalletId, sender: PeerId, state: &StateVector) {
+        let _ = self.store.update(wallet, &mut |r| {
+            let mut r = r?;
+            r.raise_peer_mark(sender, state);
+            Some(r)
+        });
+    }
+
+    /// 005: the (unauthenticated) format version of the stored wallet file `name`.
+    pub(crate) fn file_format(&self, name: &WalletName) -> Option<u16> {
+        let (_, mut reader) = self.source.open(name.as_str()).ok()?;
+        let mut head = Vec::with_capacity(128);
+        reader.by_ref().take(128).read_to_end(&mut head).ok()?;
+        head.resize(head.len().max(79), 0);
+        vault_core::peek_format_version(&head).ok()
     }
 
     fn now(&self) -> Duration {
@@ -537,6 +579,8 @@ impl SyncShared {
             self.drain_engine();
         }
         self.drain_engine();
+        // 005: share frames go out on the same thread and channels.
+        self.share.flush();
     }
 }
 
@@ -544,7 +588,12 @@ impl SyncShared {
 struct Sink(Arc<SyncShared>);
 
 impl SyncFrameSink for Sink {
+    fn channel_version(&self, peer: DeviceId, conn: u64, version: HelloVersion) {
+        self.0.share.channel_version(peer, conn, version);
+    }
+
     fn channel_up(&self, peer: DeviceId, conn: u64, session: [u8; 32], dialer: bool) {
+        self.0.share.channel_up(peer, conn, session);
         self.0
             .engine()
             .channel_up(peer_of(&peer), conn, session, dialer);
@@ -559,6 +608,11 @@ impl SyncFrameSink for Sink {
         let frame = match payload {
             Payload::SyncCtl { more, fragment } => Frame::Ctl { more, fragment },
             Payload::CopyData { bytes } => Frame::Data(bytes),
+            share @ (Payload::ShareMsg { .. } | Payload::ShareData { .. }) => {
+                self.0.share.frame(peer, conn, share);
+                self.0.notify();
+                return;
+            }
             _ => return,
         };
         self.0.engine().on_frame(peer_of(&peer), conn, frame);
@@ -566,6 +620,7 @@ impl SyncFrameSink for Sink {
     }
 
     fn channel_down(&self, peer: DeviceId, conn: u64) {
+        self.0.share.channel_down(peer, conn);
         self.0.engine().channel_down(peer_of(&peer), conn);
         self.0.drain_engine();
         self.0.sched().channel_down(peer_of(&peer));
@@ -894,6 +949,8 @@ impl SyncRuntime {
     pub fn new(
         sync_dir: PathBuf,
         wallets_dir: PathBuf,
+        received: Arc<FsReceivedStore>,
+        slots: Arc<TransferSlots>,
         net: Arc<NetRuntime>,
         log: Log,
         safety: Duration,
@@ -903,7 +960,15 @@ impl SyncRuntime {
         let store = Arc::new(FileSyncStore::new(sync_dir));
         let source = Arc::new(FsWalletSource::new(wallets_dir));
         let wall: Arc<dyn WallClock> = Arc::new(StdWall);
-        let engine = Engine::new(
+        let share = Arc::new(ShareCore::new(
+            store.clone(),
+            source.clone(),
+            received,
+            Arc::clone(&slots),
+            Arc::clone(&net),
+            log.clone(),
+        ));
+        let engine = Engine::with_slots(
             EngineDeps {
                 store: store.clone(),
                 source: source.clone() as Arc<dyn WalletSource>,
@@ -915,6 +980,7 @@ impl SyncRuntime {
                 round_timeout: timing.round_timeout,
                 ..EngineConfig::default()
             },
+            slots,
         );
         Self {
             shared: Arc::new(SyncShared {
@@ -933,6 +999,7 @@ impl SyncRuntime {
                 log,
                 timing,
                 wall,
+                share,
             }),
             threads: Mutex::new(Vec::new()),
         }

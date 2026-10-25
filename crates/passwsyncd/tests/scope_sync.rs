@@ -31,7 +31,8 @@ fn no_sharing_invitation_or_per_wallet_toggle_route_exists() {
     for (method, path) in [
         ("POST", "/api/wallets/Personal/sync/enable"),
         ("POST", "/api/wallets/Personal/sync/disable"),
-        ("POST", "/api/wallets/Personal/share"),
+        // 005 removed `POST /api/wallets/Personal/share` from this list: feature 005 adds
+        // that route (wallet sharing, specs/005-wallet-sharing/contracts/http-api-share.md).
         ("POST", "/api/sync/relay"),
         ("POST", "/api/invitations"),
         ("GET", "/api/sync/settings"),

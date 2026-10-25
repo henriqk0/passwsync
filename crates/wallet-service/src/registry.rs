@@ -115,7 +115,7 @@ pub(crate) struct WalletSlot {
 }
 
 impl WalletSlot {
-    fn new(state: Slot) -> Arc<Self> {
+    pub(crate) fn new(state: Slot) -> Arc<Self> {
         Arc::new(Self {
             state: Mutex::new(state),
             attempts: Mutex::new(()),
@@ -144,9 +144,9 @@ pub struct Service {
     clock: Arc<dyn Clock>,
     pub(crate) elapsed: Arc<dyn ElapsedClock>,
     pub(crate) config: ServiceConfig,
-    slots: Mutex<BTreeMap<WalletName, SlotRef>>,
+    pub(crate) slots: Mutex<BTreeMap<WalletName, SlotRef>>,
     /// Serializes wallet creation (check name free → KDF → first save → register).
-    create_lock: Mutex<()>,
+    pub(crate) create_lock: Mutex<()>,
     /// One key derivation or merge at a time, service-wide (memory budget, 004 T058).
     pub(crate) kdf_gate: Mutex<()>,
     kdf_active: Arc<AtomicUsize>,
@@ -154,6 +154,8 @@ pub struct Service {
     suspend_offset: Mutex<Duration>,
     /// 004: the host's pending-copy port (none: no sync).
     pub(crate) pending: Mutex<Option<Arc<dyn crate::PendingCopies>>>,
+    /// 005: told about every lock (one observer).
+    observer: Mutex<Option<Arc<dyn crate::LockObserver>>>,
 }
 
 /// More time than this between the two clocks means the computer was suspended.
@@ -181,6 +183,25 @@ impl Service {
             kdf_gate: Mutex::new(()),
             kdf_active: Arc::new(AtomicUsize::new(0)),
             pending: Mutex::new(None),
+            observer: Mutex::new(None),
+        }
+    }
+
+    /// 005: sets the one lock observer (replacing any previous one).
+    pub fn set_lock_observer(&self, observer: Arc<dyn crate::LockObserver>) {
+        *lock(&self.observer) = Some(observer);
+    }
+
+    /// Tells the observer about `names`, outside every service lock.
+    fn observe_locked(&self, names: &[WalletName]) {
+        if names.is_empty() {
+            return;
+        }
+        let observer = lock(&self.observer).clone();
+        if let Some(observer) = observer {
+            for name in names {
+                observer.locked(name);
+            }
         }
     }
 
@@ -331,6 +352,17 @@ impl Service {
             last_activity: self.elapsed.monotonic(),
         };
         Ok(UnlockOutcome::Unlocked)
+    }
+
+    /// 005: records a deliberate action on an unlocked wallet (the share route counts as
+    /// activity, 002 idle timer). `WalletLocked` when locked.
+    pub fn touch(&self, name: &WalletName) -> Result<(), ServiceError> {
+        let slot = self.slot(name)?;
+        if self.touch_if_unlocked(&slot) {
+            Ok(())
+        } else {
+            Err(ServiceError::WalletLocked)
+        }
     }
 
     /// Records activity and returns true if the slot is unlocked.
@@ -491,7 +523,11 @@ impl Service {
     /// locked.
     pub fn lock(&self, name: &WalletName) -> Result<bool, ServiceError> {
         let slot = self.slot(name)?;
-        Ok(Self::lock_slot(&slot))
+        let locked = Self::lock_slot(&slot);
+        if locked {
+            self.observe_locked(std::slice::from_ref(name));
+        }
+        Ok(locked)
     }
 
     fn lock_slot(slot: &WalletSlot) -> bool {
@@ -513,11 +549,14 @@ impl Service {
 
     /// Locks every wallet; returns the names that were unlocked, sorted.
     pub fn lock_all(&self) -> Vec<WalletName> {
-        self.all_slots()
+        let locked: Vec<WalletName> = self
+            .all_slots()
             .into_iter()
             .filter(|(_, slot)| Self::lock_slot(slot))
             .map(|(name, _)| name)
-            .collect()
+            .collect();
+        self.observe_locked(&locked);
+        locked
     }
 
     /// Locks every wallet idle for at least the auto-lock time; returns their names.
@@ -539,6 +578,7 @@ impl Service {
                 locked.push(name);
             }
         }
+        self.observe_locked(&locked);
         locked
     }
 

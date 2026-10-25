@@ -77,6 +77,8 @@ pub struct Paths {
     pub wallets_dir: PathBuf,
     /// 004: sync records and pending copies (contracts/host-runtime-sync.md).
     pub sync_dir: PathBuf,
+    /// 005: received wallets awaiting a password (contracts/host-runtime-share.md).
+    pub received_dir: PathBuf,
     pub runtime_dir: PathBuf,
     pub launch_file: PathBuf,
     pub lock_file: PathBuf,
@@ -111,6 +113,7 @@ impl Paths {
             config_dir,
             wallets_dir: data_home.join("passwsync/wallets"),
             sync_dir: data_home.join("passwsync/sync"),
+            received_dir: data_home.join("passwsync/received"),
             launch_file: runtime_dir.join("launch-url"),
             lock_file: runtime_dir.join("instance.lock"),
             runtime_dir,

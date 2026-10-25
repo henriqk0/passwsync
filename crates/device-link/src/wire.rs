@@ -62,6 +62,8 @@ pub enum HelloVersion {
     V1,
     /// 004: v1 plus the sync payload types 0x20 and 0x21.
     V2,
+    /// 005: v2 plus the share payload types 0x30 and 0x31.
+    V3,
 }
 
 /// `PWSC || version || kind`. Pairing exists only in version 1.
@@ -73,16 +75,18 @@ pub fn hello_versioned(kind: HelloKind, version: HelloVersion) -> [u8; HELLO_LEN
     let v = match version {
         HelloVersion::V1 => 1,
         HelloVersion::V2 => 2,
+        HelloVersion::V3 => 3,
     };
     [b'P', b'W', b'S', b'C', v, k]
 }
 
-/// Accepts channel Hello v1 and v2 and pairing Hello v1.
+/// Accepts channel Hello v1, v2 and v3 and pairing Hello v1.
 pub fn parse_hello_versioned(body: &[u8]) -> Result<(HelloKind, HelloVersion), Error> {
     match body {
         [b'P', b'W', b'S', b'C', 1, 1] => Ok((HelloKind::Channel, HelloVersion::V1)),
         [b'P', b'W', b'S', b'C', 1, 2] => Ok((HelloKind::Pairing, HelloVersion::V1)),
         [b'P', b'W', b'S', b'C', 2, 1] => Ok((HelloKind::Channel, HelloVersion::V2)),
+        [b'P', b'W', b'S', b'C', 3, 1] => Ok((HelloKind::Channel, HelloVersion::V3)),
         _ => Err(Error::Protocol),
     }
 }
@@ -144,6 +148,14 @@ pub enum Payload {
     CopyData {
         bytes: Vec<u8>,
     },
+    /// 005 (channel v3 only): one complete share message (opaque here, 1..=1000 bytes).
+    ShareMsg {
+        body: Vec<u8>,
+    },
+    /// 005 (channel v3 only): a chunk of the sender's current share transfer (1..=1000 bytes).
+    ShareData {
+        bytes: Vec<u8>,
+    },
 }
 
 fn push_name(out: &mut Vec<u8>, name: &DeviceName) {
@@ -198,6 +210,16 @@ impl Payload {
                 out.push(0x21);
                 out.extend_from_slice(bytes);
             }
+            Self::ShareMsg { body } => {
+                out.reserve(body.len() + 1);
+                out.push(0x30);
+                out.extend_from_slice(body);
+            }
+            Self::ShareData { bytes } => {
+                out.reserve(bytes.len() + 1);
+                out.push(0x31);
+                out.extend_from_slice(bytes);
+            }
         }
         out
     }
@@ -216,6 +238,21 @@ impl Payload {
             }),
             [0x21, ..] => Err(Error::Protocol),
             _ => Self::decode(bytes),
+        }
+    }
+
+    /// Channel v3 decoding: the v2 set plus `ShareMsg` and `ShareData` (1..=1000 bytes).
+    pub fn decode_v3(bytes: &[u8]) -> Result<Self, Error> {
+        let chunk_ok = |chunk: &[u8]| (1..=MAX_SYNC_CHUNK).contains(&chunk.len());
+        match bytes {
+            [0x30, body @ ..] if chunk_ok(body) => Ok(Self::ShareMsg {
+                body: body.to_vec(),
+            }),
+            [0x31, data @ ..] if chunk_ok(data) => Ok(Self::ShareData {
+                bytes: data.to_vec(),
+            }),
+            [0x30 | 0x31, ..] => Err(Error::Protocol),
+            _ => Self::decode_v2(bytes),
         }
     }
 

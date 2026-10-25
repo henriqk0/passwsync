@@ -31,7 +31,7 @@ pub(crate) fn serve(shared: &Arc<Shared>, stream: TcpStream) {
         Ok(hello) => hello,
         Err(error) => return count_frame_error(shared, error),
     };
-    // 004: channel Hello v1 and v2 are accepted; pairing stays v1 (contracts/sync-protocol.md).
+    // 004/005: channel Hello v1, v2 and v3 are accepted; pairing stays v1.
     match parse_hello_versioned(&hello) {
         Ok((HelloKind::Pairing, _)) => serve_pairing(shared, &stream, &hello),
         Ok((HelloKind::Channel, _)) => serve_channel(shared, stream, &hello, &mut unauth),
@@ -211,6 +211,7 @@ pub(crate) fn register(
     let dialer = channel.dialer_id();
     let peer_name = channel.peer_name().clone();
     let sync = channel.sync_enabled();
+    let version = channel.version();
     let (session, is_dialer) = (channel.session_hash(), channel.is_dialer());
     let channel = Arc::new(Mutex::new(channel));
     let last_sent = Arc::new(Mutex::new(shared.mono.now()));
@@ -221,6 +222,7 @@ pub(crate) fn register(
         channel: Arc::clone(&channel),
         last_sent: Arc::clone(&last_sent),
         sync,
+        version,
     };
     let now_unix = shared.wall.unix_now();
     let mut state = shared.lock();
@@ -248,8 +250,9 @@ pub(crate) fn register(
     let _ = link.on_name_update(registry, &id, peer_name);
     drop(state);
     shared.events.emit(NetEvent::PeerConnected(id));
-    if sync {
-        if let Some(sink) = shared.sync_sink() {
+    if let Some(sink) = shared.sync_sink() {
+        sink.channel_version(id, conn, version);
+        if sync {
             sink.channel_up(id, conn, session, is_dialer);
         }
     }
@@ -322,8 +325,14 @@ pub(crate) fn run_channel(shared: &Arc<Shared>, stream: TcpStream, registered: R
                             CloseReason::Shutdown => Disconnect::Closed,
                         };
                     }
-                    // 004: sync frames (accepted by `open` only on channel v2).
-                    Ok(payload @ (Payload::SyncCtl { .. } | Payload::CopyData { .. })) => {
+                    // 004: sync frames (accepted by `open` only on channel v2/v3); 005: share
+                    // frames (accepted only on channel v3).
+                    Ok(
+                        payload @ (Payload::SyncCtl { .. }
+                        | Payload::CopyData { .. }
+                        | Payload::ShareMsg { .. }
+                        | Payload::ShareData { .. }),
+                    ) => {
                         if let Some(sink) = shared.sync_sink() {
                             sink.frame(id, conn, payload);
                         }

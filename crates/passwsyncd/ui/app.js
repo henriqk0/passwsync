@@ -1118,3 +1118,376 @@ $("sync-now-all").addEventListener("click", () => syncNow(null));
 $("sync-now-wallet").addEventListener("click", () => syncNow(ui.selected));
 syncPoll();
 setInterval(syncPoll, NET_POLL_MS);
+
+// --- Wallet sharing (005): Share dialog, invitation panel, Receive form, Received list. ---
+
+const SHARE_POLL_MS = 5000;
+// While an invitation or a redemption is in progress, poll every second.
+const SHARE_FAST_POLL_MS = 1000;
+const share = { data: null, timer: null, keys: {}, dialogOpen: false };
+
+const SHARE_STATES = {
+  active: "Enter this code on the receiving device.",
+  awaiting_acceptance: "The receiving device entered the code.",
+  transferring: "Sending the encrypted wallet...",
+  completed: "Delivered.",
+  cancelled: "Invitation cancelled",
+  expired: "The invitation expired.",
+  rejected: "Rejected.",
+  refused: "Refused",
+  failed: "Sharing failed",
+};
+const SHARE_REASONS = {
+  by_person: "by you",
+  wallet_locked: "the wallet was locked",
+  recipient_revoked: "the device was revoked",
+  replaced: "replaced by a new invitation",
+  wrong_code: "wrong code",
+  not_recipient: "not recipient",
+  recipient_cancelled: "cancelled on the other device",
+  channel_lost: "connection lost",
+  busy: "busy, try again later",
+  sender_error: "the wallet file changed or could not be read",
+  storage: "the other device could not store it",
+  too_large: "too large",
+  received_limit: "the other device already holds 8 received wallets",
+  timeout: "no answer in time",
+};
+const RECEIVE_STATES = {
+  connecting: "Connecting to the sender...",
+  awaiting_sender: "Waiting for the sender to accept...",
+  receiving: "Receiving the encrypted wallet...",
+  stored: "Received. Open it below with its master password.",
+  failed: "Receiving failed",
+  cancelled: "Cancelled.",
+};
+const RECEIVE_REASONS = {
+  invalid: "invalid: wrong code, not for this device, or already used",
+  cancelled_by_sender: "invitation cancelled by sender",
+  expired: "the invitation expired",
+  rejected: "rejected by the sender",
+  busy: "busy, try again later",
+  too_large: "too large",
+  storage: "could not store it on this device",
+  sender_error: "the sender's wallet file changed",
+  unreachable: "the sender cannot be reached",
+  unsupported: "this device does not support sharing",
+  received_limit: "8 received wallets already wait: open or discard one first",
+  channel_lost: "connection lost",
+  timeout: "no answer in time",
+  id_mismatch: "a different device answered at that address",
+};
+const SHARE_UNAVAILABLE = {
+  networking_off: "Sharing needs networking; it is turned on in the configuration file.",
+  network_unavailable: "Sharing is unavailable: no local network.",
+  received_unusable: "Sharing is unavailable: the received wallets folder has wrong owner or permissions.",
+};
+const SHARE_SUPPORT = {
+  supported: "",
+  unsupported: "this device does not support sharing",
+  unknown: "not seen yet",
+};
+
+function peerLabel(peer) {
+  if (!peer) return "unknown device";
+  return (peer.name || "unnamed device") + " (" + peer.fingerprint + ")";
+}
+
+function renderShareDialog() {
+  const data = share.data;
+  const dialog = $("share-dialog");
+  const wallet = selectedWallet();
+  dialog.hidden = !share.dialogOpen || !wallet || !wallet.unlocked;
+  if (dialog.hidden || !data) return;
+  const key = JSON.stringify([wallet.name, data.peers.map((p) => [p.device_id, p.name, p.status, p.share])]);
+  if (key === share.keys.dialog) return;
+  share.keys.dialog = key;
+  const list = $("share-device-list");
+  list.replaceChildren();
+  if (data.peers.length === 0) list.append(element("li", "No paired devices. Pair a device first.", "muted"));
+  for (const p of data.peers) {
+    const item = element("li");
+    const choose = button(peerLabel(p), () => createInvitation(wallet.name, p).catch(report), "link");
+    choose.disabled = p.share === "unsupported";
+    item.append(choose, element("span", PEER_STATUS[p.status] || p.status, "badge"));
+    if (SHARE_SUPPORT[p.share]) item.append(element("span", SHARE_SUPPORT[p.share], "muted small"));
+    list.append(item);
+  }
+}
+
+async function createInvitation(wallet, peer) {
+  await api("POST", walletPath(wallet, "/share"), { device_id: peer.device_id });
+  share.dialogOpen = false;
+  setStatus("Invitation for " + peerLabel(peer) + " created.");
+  await sharePoll();
+  scheduleSharePoll();
+}
+
+function renderInvitation() {
+  const inv = share.data.invitation;
+  const panel = $("share-panel");
+  panel.hidden = inv === null;
+  if (!inv) return;
+  const recipient = inv.recipient;
+  let text = (SHARE_STATES[inv.state] || inv.state) + " Wallet '" + inv.wallet + "' for " + peerLabel(recipient) + ".";
+  if (inv.reason) text += " (" + (SHARE_REASONS[inv.reason] || inv.reason) + ")";
+  if (inv.progress) text += " " + inv.progress.sent + " of " + inv.progress.size + " bytes.";
+  $("share-state").textContent = text;
+  $("share-code").textContent = inv.code || "";
+  const qrKey = inv.code || "";
+  if (share.keys.qr !== qrKey) {
+    share.keys.qr = qrKey;
+    renderQr($("share-qr"), inv.qr);
+  }
+  $("share-countdown").textContent = inv.code ? "Valid for " + inv.expires_in + " s" : "";
+  const deciding = inv.state === "awaiting_acceptance";
+  $("share-decision").hidden = !deciding;
+  $("share-decision-text").textContent = deciding
+    ? "Send wallet '" + inv.wallet + "' to " + recipient.name + " (" + recipient.fingerprint + ")?"
+    : "";
+  $("share-accept").dataset.deviceId = deciding ? recipient.device_id : "";
+  const live = ["active", "awaiting_acceptance", "transferring"].includes(inv.state);
+  $("share-cancel").hidden = !live && inv.state !== "completed";
+  if (inv.state !== "completed") $("share-explain").hidden = true;
+}
+
+function renderReceive() {
+  const r = share.data.receive;
+  if (!r) {
+    $("receive-state").textContent = "";
+    $("receive-cancel").hidden = true;
+    return;
+  }
+  let text = RECEIVE_STATES[r.state] || r.state;
+  if (r.sender) text += " Sender: " + peerLabel(r.sender) + ".";
+  if (r.seconds_left) text += " The sender has " + r.seconds_left + " s to accept.";
+  if (r.progress) text += " " + r.progress.received + " of " + r.progress.size + " bytes.";
+  if (r.reason) text += " (" + (RECEIVE_REASONS[r.reason] || r.reason) + ")";
+  $("receive-state").textContent = text;
+  $("receive-cancel").hidden = !["connecting", "awaiting_sender", "receiving"].includes(r.state);
+}
+
+function shortFingerprint(peer) {
+  return peer && peer.fingerprint ? peer.fingerprint.slice(0, 4) : "";
+}
+
+function timeLeft(expiresAt) {
+  const seconds = Math.max(0, expiresAt - Math.floor(Date.now() / 1000));
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  return hours + " h " + minutes + " min";
+}
+
+function renderReceived() {
+  const items = share.data.received;
+  const key = JSON.stringify(items.map((r) => [r.id, r.sender.name, r.expires_at, timeLeft(r.expires_at)]));
+  if (key === share.keys.received) return;
+  share.keys.received = key;
+  const list = $("received-list");
+  list.replaceChildren();
+  if (items.length === 0) list.append(element("li", "No received wallets.", "muted"));
+  for (const r of items) {
+    const item = element("li");
+    item.append(
+      element("strong", "From " + peerLabel(r.sender)),
+      element("span", " received " + formatTime(r.received_at), "muted small"),
+      element("span", " deleted automatically in " + timeLeft(r.expires_at), "muted small"),
+    );
+    const open = element("form", undefined, "row");
+    const nameId = "received-name-" + r.id;
+    const passwordId = "received-password-" + r.id;
+    const nameLabel = element("label", "Local name");
+    nameLabel.htmlFor = nameId;
+    const nameInput = element("input");
+    nameInput.id = nameId;
+    nameInput.type = "text";
+    nameInput.maxLength = 64;
+    nameInput.value = "Shared wallet " + shortFingerprint(r.sender);
+    const passwordLabel = element("label", "Master password");
+    passwordLabel.htmlFor = passwordId;
+    const passwordInput = element("input");
+    passwordInput.id = passwordId;
+    passwordInput.type = "password";
+    passwordInput.autocomplete = "off";
+    open.append(nameLabel, nameInput, passwordLabel, passwordInput, button("Open", () => openReceived(r, nameInput, passwordInput).catch(handleError)));
+    open.addEventListener("submit", (event) => {
+      event.preventDefault();
+      openReceived(r, nameInput, passwordInput).catch(handleError);
+    });
+    item.append(open, button("Discard", () => discardReceived(r).catch(report), "danger"));
+    list.append(item);
+  }
+}
+
+async function discardReceived(r) {
+  const question = "Discard the wallet received from " + peerLabel(r.sender) + "? It is deleted from this device.";
+  if (!window.confirm(question)) return;
+  await api("POST", "/api/received/" + encodeURIComponent(r.id) + "/discard");
+  setStatus("Received wallet discarded.");
+  await sharePoll();
+}
+
+const NOTICE_TEXTS = {
+  received_expired: (n) => "A received wallet from " + n.sender + " was deleted after 24 hours.",
+  received_deleted_revoked: (n) => "Received wallets from " + n.sender + " were deleted because the device was revoked.",
+  received_cleaned: (n) => n.count + " incomplete or unusable received file(s) were removed at start-up.",
+  already_present: (n) => "That wallet is already on this device as '" + n.existing + "'.",
+};
+
+function renderShareNotices() {
+  const items = share.data.notices;
+  const key = JSON.stringify(items.map((n) => n.id));
+  if (key === share.keys.notices) return;
+  share.keys.notices = key;
+  const list = $("share-notices");
+  list.replaceChildren();
+  for (const n of items) {
+    const item = element("li");
+    const text = NOTICE_TEXTS[n.kind] ? NOTICE_TEXTS[n.kind](n) : n.kind;
+    item.append(element("span", text), button("Dismiss", () => dismissNotice(n.id).catch(report), "secondary"));
+    list.append(item);
+  }
+}
+
+async function dismissNotice(id) {
+  await api("POST", "/api/share/notices/dismiss", { ids: [id] });
+  await sharePoll();
+}
+
+async function openReceived(r, nameInput, passwordInput) {
+  const body = { name: nameInput.value, password: passwordInput.value };
+  passwordInput.value = "";
+  try {
+    const opened = await api("POST", "/api/received/" + encodeURIComponent(r.id) + "/open", body);
+    body.password = "";
+    ui.selected = opened.name;
+    setStatus("Wallet " + opened.name + " opened; it now syncs with " + peerLabel(r.sender) + ".");
+    await refreshState();
+    await loadEntries();
+  } catch (error) {
+    body.password = "";
+    throw error;
+  } finally {
+    await sharePoll();
+  }
+}
+
+function renderReceiveSenders() {
+  const peers = share.data.peers;
+  const key = JSON.stringify(peers.map((p) => [p.device_id, p.name]));
+  if (key === share.keys.senders) return;
+  share.keys.senders = key;
+  const select = $("receive-sender");
+  const current = select.value;
+  select.replaceChildren();
+  const none = element("option", "(enter an address instead)");
+  none.value = "";
+  select.append(none);
+  for (const p of peers) {
+    const option = element("option", peerLabel(p));
+    option.value = p.device_id;
+    select.append(option);
+  }
+  select.value = current;
+}
+
+function renderShare() {
+  const data = share.data;
+  if (!data) return;
+  const available = data.available;
+  $("share-unavailable").hidden = available;
+  $("share-unavailable").textContent = available ? "" : SHARE_UNAVAILABLE[data.unavailable_reason] || data.unavailable_reason;
+  $("share-wallet").disabled = !available;
+  for (const node of $("receive-form").elements) node.disabled = !available;
+  renderReceiveSenders();
+  renderShareDialog();
+  renderInvitation();
+  renderReceive();
+  renderReceived();
+  renderShareNotices();
+}
+
+function sharePollDelay() {
+  const data = share.data;
+  const active =
+    data &&
+    ((data.invitation && ["active", "awaiting_acceptance", "transferring"].includes(data.invitation.state)) ||
+      (data.receive && ["connecting", "awaiting_sender", "receiving"].includes(data.receive.state)));
+  return active ? SHARE_FAST_POLL_MS : SHARE_POLL_MS;
+}
+
+// Background: GET /api/share never counts as activity for auto-lock.
+async function sharePoll() {
+  try {
+    share.data = await api("GET", "/api/share");
+    renderShare();
+  } catch (error) {
+    if (!(error instanceof ApiError && error.status === 401)) report(error);
+  }
+}
+
+function scheduleSharePoll() {
+  clearTimeout(share.timer);
+  share.timer = setTimeout(async () => {
+    await sharePoll();
+    scheduleSharePoll();
+  }, sharePollDelay());
+}
+
+async function shareAction(method, path, body, done) {
+  try {
+    await api(method, path, body);
+    if (done) setStatus(done);
+  } catch (error) {
+    report(error);
+  }
+  await sharePoll();
+  scheduleSharePoll();
+}
+
+$("share-wallet").addEventListener("click", () => {
+  share.dialogOpen = true;
+  share.keys.dialog = null;
+  renderShareDialog();
+  $("share-dialog-heading").focus();
+});
+$("share-dialog-close").addEventListener("click", () => {
+  share.dialogOpen = false;
+  renderShareDialog();
+});
+$("share-accept").addEventListener("click", () => {
+  const body = { device_id: $("share-accept").dataset.deviceId };
+  return shareAction("POST", "/api/share/accept", body, "Sending the encrypted wallet.");
+});
+$("share-reject").addEventListener("click", () => shareAction("POST", "/api/share/reject", undefined, "Invitation rejected."));
+$("share-cancel").addEventListener("click", async () => {
+  const inv = share.data && share.data.invitation;
+  try {
+    const result = await api("POST", "/api/share/cancel");
+    if (result && result.already_delivered) {
+      const name = inv ? peerLabel(inv.recipient) : "the other device";
+      const explain = $("share-explain");
+      explain.textContent =
+        "Nothing to cancel: the encrypted copy already reached " + name +
+        "; to stop access, revoke the device and change the master password.";
+      explain.hidden = false;
+      return;
+    }
+    setStatus("Invitation cancelled.");
+  } catch (error) {
+    report(error);
+  }
+  await sharePoll();
+  scheduleSharePoll();
+});
+$("receive-cancel").addEventListener("click", () => shareAction("POST", "/api/receive/cancel", undefined, "Receiving cancelled."));
+$("receive-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  const sender = $("receive-sender").value;
+  const address = $("receive-address").value.trim();
+  const body = { code: $("receive-code").value, device_id: sender || null, address: address || null };
+  $("receive-code").value = "";
+  return shareAction("POST", "/api/receive", body, "Redeeming the invitation...");
+});
+
+sharePoll().then(scheduleSharePoll);

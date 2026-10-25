@@ -1,6 +1,7 @@
 //! In-memory devices driving real `wallet-sync` engines over a frame pump (sans-IO).
 #![allow(dead_code)]
 
+pub mod share;
 pub mod sim;
 
 use std::sync::Arc;

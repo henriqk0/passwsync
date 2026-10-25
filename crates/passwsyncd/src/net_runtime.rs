@@ -12,11 +12,12 @@ use device_link::name::{DeviceName, InterfaceName};
 use device_link::pairing::{AcceptError, PeerInfo};
 use device_link::policy::AddressPolicy;
 use device_link::registry::PeerRegistry;
-use device_link::wire::Payload;
+use device_link::wire::{HelloVersion, Payload};
 use device_link_net::interfaces::{Interface, InterfaceSource, OsInterfaces};
 use device_link_net::{
-    Disconnect, EventSink, JoinError, NetEvent, Node, NodeConfig, PairStartError, Refusal,
-    RevokeError, SendError, Snapshot, StartError, StdMonoClock, SyncFrameSink, SystemWallClock,
+    ChannelOpener, Disconnect, EventSink, JoinError, NetEvent, Node, NodeConfig, PairStartError,
+    Refusal, RevokeError, SendError, Snapshot, StartError, StdMonoClock, SyncFrameSink,
+    SystemWallClock,
 };
 use wallet_sync::sched::SyncTiming;
 
@@ -120,6 +121,9 @@ impl EventSink for LogSink {
                 log.emit(&LogEvent::InterfacesChanged { interfaces: &names })
             }
             NetEvent::PeerLegacy(id) => log.emit(&LogEvent::SyncPeerLegacy {
+                fingerprint: &id.fingerprint(),
+            }),
+            NetEvent::PeerNoShare(id) => log.emit(&LogEvent::SharePeerUnsupported {
                 fingerprint: &id.fingerprint(),
             }),
         }
@@ -442,6 +446,21 @@ impl NetRuntime {
     /// 004: whether `peer` is currently treated as v1-only ("sync unsupported by peer").
     pub fn is_legacy(&self, peer: &DeviceId) -> bool {
         self.node().as_ref().is_some_and(|n| n.is_legacy(peer))
+    }
+
+    /// 005: the Hello version of the current channel to `peer`.
+    pub fn channel_version(&self, peer: &DeviceId) -> Option<HelloVersion> {
+        self.node().as_ref().and_then(|n| n.channel_version(peer))
+    }
+
+    /// 005: the highest channel version currently dialed to `peer` (`None`: no node).
+    pub fn max_version(&self, peer: &DeviceId) -> Option<HelloVersion> {
+        self.node().as_ref().map(|n| n.max_version(peer))
+    }
+
+    /// 005: a handle that opens channels from a worker thread.
+    pub fn opener(&self) -> Option<ChannelOpener> {
+        self.node().as_ref().map(Node::opener)
     }
 
     /// Shutdown: close the network (Close(shutdown) on channels, sockets closed, last seen

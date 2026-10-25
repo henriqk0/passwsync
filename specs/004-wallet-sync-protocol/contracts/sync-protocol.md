@@ -99,3 +99,11 @@ merged result is saved, `peer_mark[p] = authenticated state`.
 
 Frames ≤ 1024 bytes; control messages ≤ 24 KiB; copies ≤ 64 MiB; 1 round per peer;
 ≤ 2 transfers service-wide; ≤ 1 MiB buffers per transfer.
+
+## Addendum (005): channel v3 and the shared transfer limit
+
+Channel v3 (005) carries everything above unchanged plus the share payload types 0x30
+`ShareMsg` and 0x31 `ShareData`. The "≤ 2 transfers service-wide" limit is now shared between
+sync copies and share transfers (one `TransferSlots` counter): two running sync transfers leave
+no slot for a share and vice versa (FR-017). Details:
+[005 share-protocol.md](../../005-wallet-sharing/contracts/share-protocol.md).

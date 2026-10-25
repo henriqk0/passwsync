@@ -100,3 +100,33 @@ impl Node { pub fn send_sync(&self, peer: &DeviceId, conn: u64, payload: &Payloa
 ```
 
 `send_sync` holds the channel mutex across seal and write and updates the keepalive clock.
+
+## Addendum (005)
+
+```rust
+// wallet-sync
+pub mod slots {
+    pub struct TransferSlots;   // service-wide transfer limit shared by sync and share
+    impl TransferSlots {
+        pub fn new(max: usize) -> Arc<Self>;
+        pub fn try_take(self: &Arc<Self>) -> Option<SlotGuard>;   // released on drop
+        pub fn active(&self) -> usize;
+        pub fn max(&self) -> usize;
+    }
+}
+impl Engine {
+    /// `Engine::new` keeps building `TransferSlots::new(config.max_transfers)` (004
+    /// behaviour); a host sharing one limit with the share engine uses:
+    pub fn with_slots(deps: EngineDeps, config: EngineConfig, slots: Arc<TransferSlots>) -> Self;
+    pub fn slots(&self) -> &Arc<TransferSlots>;
+}
+// device-link: HelloVersion::V3, Payload::ShareMsg (0x30) / Payload::ShareData (0x31),
+//              Channel::share_enabled(), Channel::version(); seal_sync accepts share
+//              payloads only on v3 channels.
+// device-link-net: SyncFrameSink::channel_version (default no-op, called before
+//              channel_up for every channel), NetEvent::PeerNoShare, SendError::NotShareEnabled,
+//              Node::ensure_channel / Node::opener, Node::max_version / channel_version.
+```
+
+The share engine, received-wallet port and `wallet-service` additions are in
+[005 core-api-share.md](../../005-wallet-sharing/contracts/core-api-share.md).

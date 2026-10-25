@@ -302,7 +302,8 @@ fn a_v1_only_peer_is_marked_legacy_and_redialed_with_v1_then_v2_after_24_hours()
             == 1),
         "redialed with v1 at once"
     );
-    assert_eq!(legacy.v2_attempts.load(Ordering::SeqCst), 1);
+    // 005: the dialer starts at v3, so the refused non-v1 Hellos are v3 then v2.
+    assert_eq!(legacy.v2_attempts.load(Ordering::SeqCst), 2);
     assert!(events.events().contains(&NetEvent::PeerLegacy(legacy_id)));
     assert!(node.is_legacy(&legacy_id));
     assert!(wait_for(Duration::from_secs(2), || node.channel_count() == 1));
@@ -320,7 +321,7 @@ fn a_v1_only_peer_is_marked_legacy_and_redialed_with_v1_then_v2_after_24_hours()
         mono.advance(Duration::from_millis(400));
         legacy.v1_channels.load(Ordering::SeqCst) == 2
     }));
-    assert_eq!(legacy.v2_attempts.load(Ordering::SeqCst), 1);
+    assert_eq!(legacy.v2_attempts.load(Ordering::SeqCst), 2);
 
     // After 24 h v2 is tried again (and falls back again).
     mono.advance(Duration::from_secs(24 * 3600 + 1));
@@ -329,7 +330,7 @@ fn a_v1_only_peer_is_marked_legacy_and_redialed_with_v1_then_v2_after_24_hours()
         mono.advance(Duration::from_millis(400));
         legacy.v1_channels.load(Ordering::SeqCst) == 3
     }));
-    assert_eq!(legacy.v2_attempts.load(Ordering::SeqCst), 2);
+    assert_eq!(legacy.v2_attempts.load(Ordering::SeqCst), 4);
     node.stop();
 }
 

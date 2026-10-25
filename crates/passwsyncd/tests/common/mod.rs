@@ -40,4 +40,5 @@ pub fn mode(path: &Path) -> u32 {
 
 pub mod inventory;
 pub mod server;
+pub mod share;
 pub mod sync;

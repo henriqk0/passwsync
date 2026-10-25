@@ -2,6 +2,7 @@
 
 use std::net::{Shutdown, SocketAddrV4, TcpStream};
 use std::sync::Arc;
+use std::time::Duration;
 
 use device_link::channel::{ChannelDialer, ChannelError};
 use device_link::error::FailReason;
@@ -11,7 +12,7 @@ use device_link::pairing::{JoinerState, PairingJoiner};
 use device_link::wire::HelloVersion;
 
 use crate::framed::{FrameError, read_frame, write_frame};
-use crate::{NetEvent, Shared};
+use crate::{EnsureError, NetEvent, Shared};
 
 /// Policy-checked connect with the step timeout.
 pub(crate) fn connect(shared: &Shared, addr: SocketAddrV4) -> Option<TcpStream> {
@@ -143,30 +144,131 @@ pub(crate) fn dial_peer(shared: &Arc<Shared>, id: DeviceId, hint: Option<SocketA
     }
 }
 
-fn run_dial(shared: &Arc<Shared>, id: DeviceId, public: [u8; 32], addr: SocketAddrV4) {
-    let now = shared.mono.now();
-    let legacy = shared
-        .lock()
-        .legacy
-        .get(&id)
-        .is_some_and(|until| now < *until);
-    let version = if legacy {
-        HelloVersion::V1
-    } else {
-        HelloVersion::V2
-    };
-    let outcome = match dial_channel(shared, id, public, addr, version) {
-        // 004: a 003 peer closes on Hello v2 before Noise message 2: remember it as legacy
-        // and redial with v1 at once (contracts/sync-protocol.md "Negotiation").
-        Err(DialFail::ClosedBeforeMsg2) if version == HelloVersion::V2 => {
-            let until = shared.mono.now() + crate::LEGACY_RETRY;
-            shared.lock().legacy.insert(id, until);
-            shared.events.emit(NetEvent::PeerLegacy(id));
-            dial_channel(shared, id, public, addr, HelloVersion::V1)
-        }
-        other => other,
+/// 005: the highest channel version to dial `id` with at `now` (v3 unless lowered within
+/// the retry period).
+pub(crate) fn max_version(state: &crate::State, id: &DeviceId, now: Duration) -> HelloVersion {
+    match state.max_version.get(id) {
+        Some((version, until)) if now < *until => *version,
+        _ => HelloVersion::V3,
     }
-    .map_err(|fail| match fail {
+}
+
+/// Dials with the peer's current maximum version; a close before Noise message 2 lowers the
+/// maximum by one (v3 -> v2 emits `PeerNoShare`, v2 -> v1 emits `PeerLegacy`, as in 004) and
+/// redials at once (005 contracts/share-protocol.md "Negotiation").
+fn dial_negotiated(
+    shared: &Arc<Shared>,
+    id: DeviceId,
+    public: [u8; 32],
+    addr: SocketAddrV4,
+) -> Result<Option<Opened>, DialFail> {
+    let mut version = max_version(&shared.lock(), &id, shared.mono.now());
+    loop {
+        match dial_channel(shared, id, public, addr, version) {
+            Err(DialFail::ClosedBeforeMsg2) if version != HelloVersion::V1 => {
+                let (lower, event) = if version == HelloVersion::V3 {
+                    (HelloVersion::V2, NetEvent::PeerNoShare(id))
+                } else {
+                    (HelloVersion::V1, NetEvent::PeerLegacy(id))
+                };
+                let until = shared.mono.now() + crate::LEGACY_RETRY;
+                shared.lock().max_version.insert(id, (lower, until));
+                shared.events.emit(event);
+                version = lower;
+            }
+            other => return other,
+        }
+    }
+}
+
+/// 005: learns the static key of the device at `addr` without revealing this device's key:
+/// the dialer stops at Noise message 2 when the presented key differs from the expected one
+/// (here this device's own key, which no other device can present).
+pub(crate) fn probe_identity(
+    shared: &Arc<Shared>,
+    addr: SocketAddrV4,
+) -> Result<DeviceId, EnsureError> {
+    let own = *shared.key.public();
+    for version in [HelloVersion::V3, HelloVersion::V2, HelloVersion::V1] {
+        let stream = connect(shared, addr).ok_or(EnsureError::Unreachable)?;
+        let mut dialer =
+            ChannelDialer::start_version(&shared.key, own, shared.name.clone(), version)
+                .map_err(|_| EnsureError::Unreachable)?;
+        let mut closed_early = false;
+        for frame in dialer.outgoing() {
+            if write_frame(&stream, &frame).is_err() {
+                closed_early = true;
+                break;
+            }
+        }
+        let body = if closed_early {
+            Err(FrameError::Closed)
+        } else {
+            read_frame(&stream, shared.timing.step_timeout)
+        };
+        let _ = stream.shutdown(Shutdown::Both);
+        match body {
+            Ok(body) => {
+                return match dialer.on_frame(&body) {
+                    Err(ChannelError::KeyMismatch { presented }) => Ok(presented),
+                    _ => Err(EnsureError::Unreachable),
+                };
+            }
+            Err(FrameError::Closed) => continue,
+            Err(_) => return Err(EnsureError::Unreachable),
+        }
+    }
+    Err(EnsureError::Unreachable)
+}
+
+/// 005: dials `id` at `addr` now (person action: no backoff) and runs the channel on its
+/// own thread; returns the connection number.
+pub(crate) fn dial_now(
+    shared: &Arc<Shared>,
+    id: DeviceId,
+    public: [u8; 32],
+    addr: SocketAddrV4,
+) -> Result<(DeviceId, u64), EnsureError> {
+    let mine = shared.lock().dialing.insert(id);
+    let outcome = dial_negotiated(shared, id, public, addr);
+    if mine {
+        shared.lock().dialing.remove(&id);
+    }
+    match outcome {
+        Ok(Some((stream, registered))) => {
+            let conn = registered.conn;
+            let closer = stream.try_clone().ok();
+            let worker = Arc::clone(shared);
+            if shared.spawn("net-chan", move || {
+                crate::conn::run_channel(&worker, stream, registered)
+            }) {
+                Ok((id, conn))
+            } else {
+                if let Some(closer) = closer {
+                    let _ = closer.shutdown(Shutdown::Both);
+                }
+                let mut state = shared.lock();
+                if state.channels.get(&id).is_some_and(|e| e.conn == conn) {
+                    state.channels.remove(&id);
+                }
+                Err(EnsureError::Unreachable)
+            }
+        }
+        // A duplicate was resolved in favour of the other connection.
+        Ok(None) => shared
+            .lock()
+            .channels
+            .get(&id)
+            .map(|e| (id, e.conn))
+            .ok_or(EnsureError::Unreachable),
+        Err(DialFail::Channel(ChannelError::KeyMismatch { .. })) => Err(EnsureError::IdMismatch),
+        Err(DialFail::Channel(ChannelError::Refused)) => Err(EnsureError::NotPaired),
+        Err(_) => Err(EnsureError::Unreachable),
+    }
+}
+
+fn run_dial(shared: &Arc<Shared>, id: DeviceId, public: [u8; 32], addr: SocketAddrV4) {
+    let outcome = dial_negotiated(shared, id, public, addr).map_err(|fail| match fail {
         DialFail::Channel(error) => error,
         DialFail::ClosedBeforeMsg2 => ChannelError::Protocol,
     });

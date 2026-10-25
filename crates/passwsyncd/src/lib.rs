@@ -16,6 +16,8 @@ pub mod net_store;
 pub mod paths;
 pub mod peer;
 pub mod qr;
+pub mod share_runtime;
+pub mod share_store;
 pub mod signals;
 pub mod sweeper;
 pub mod sync_runtime;

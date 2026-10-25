@@ -450,6 +450,8 @@ fn revoke(state: &AppState, id: &str) -> Response {
         Ok(()) => {
             // 004: sync with it stops; its pending copies and record lines are deleted.
             state.sync.revoke(&id);
+            // 005: its invitation and exchange end; its received wallets are deleted.
+            state.share.peer_revoked(&id);
             ok_empty()
         }
         Err(RevokeError::NotFound) => not_found(),

@@ -10,6 +10,8 @@ pub mod ports;
 pub mod record;
 pub mod round;
 pub mod sched;
+pub mod share;
+pub mod slots;
 pub mod status;
 pub mod tags;
 #[cfg(feature = "testkit")]
