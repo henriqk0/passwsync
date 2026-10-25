@@ -23,6 +23,20 @@ pub enum ServiceError {
     UnsupportedKdf,
     KdfParamsOutOfRange,
     WalletTooLarge,
+    /// 004: the entry has concurrent versions; resolve the conflict first.
+    EntryConflicted,
+    /// 004: a received copy needs another master password, or is corrupted.
+    CannotOpenCopy,
+    /// 004: a received copy failed the sync checks (wallet id, claimed state, marks, jump).
+    CopyRejected,
+    /// 004: merging would give an entry more than 16 versions; resolve conflicts first.
+    TooManyConflicts,
+    /// 004: the master password was changed on two devices; the person chooses.
+    PasswordConflict,
+    /// 004: resolve on an entry without concurrent versions.
+    NotConflicted,
+    /// 004: no such version index.
+    InvalidVersionIndex,
     Storage,
     Internal,
 }
@@ -46,6 +60,13 @@ impl ServiceError {
             Self::UnsupportedKdf => "unsupported_kdf",
             Self::KdfParamsOutOfRange => "kdf_params_out_of_range",
             Self::WalletTooLarge => "wallet_too_large",
+            Self::EntryConflicted => "entry_conflicted",
+            Self::CannotOpenCopy => "cannot_open_copy",
+            Self::CopyRejected => "invalid_copy",
+            Self::TooManyConflicts => "too_many_conflicts",
+            Self::PasswordConflict => "password_conflict",
+            Self::NotConflicted => "not_conflicted",
+            Self::InvalidVersionIndex => "invalid_version",
             Self::Storage => "storage_error",
             Self::Internal => "internal_error",
         }
@@ -72,6 +93,17 @@ impl ServiceError {
             Self::UnsupportedKdf => "unsupported key derivation function",
             Self::KdfParamsOutOfRange => "key derivation parameters out of the accepted range",
             Self::WalletTooLarge => "wallet exceeds the 64 MiB size limit",
+            Self::EntryConflicted => {
+                "this credential has conflicting versions; resolve the conflict first"
+            }
+            Self::CannotOpenCopy => "cannot open: different master password or corrupted",
+            Self::CopyRejected => "the received copy is not valid for this wallet",
+            Self::TooManyConflicts => "too many conflicts, resolve first",
+            Self::PasswordConflict => {
+                "the master password was changed on two devices; choose which one to keep"
+            }
+            Self::NotConflicted => "this credential has no conflict",
+            Self::InvalidVersionIndex => "no such version of this credential",
             Self::Storage => "the wallet could not be saved; the change was not applied",
             Self::Internal => "internal error",
         }
@@ -106,7 +138,13 @@ impl From<VaultError> for ServiceError {
             VaultError::InvalidPasswordOrCorrupted => Self::InvalidPasswordOrCorrupted,
             VaultError::WalletTooLarge => Self::WalletTooLarge,
             VaultError::Storage(error) => error.into(),
-            VaultError::InvalidDeviceId | VaultError::Rng => Self::Internal,
+            VaultError::InvalidDeviceId
+            | VaultError::Rng
+            | VaultError::TooManyDevices
+            | VaultError::CounterOverflow => Self::Internal,
+            VaultError::EntryConflicted => Self::EntryConflicted,
+            VaultError::NotConflicted => Self::NotConflicted,
+            VaultError::InvalidVersionIndex => Self::InvalidVersionIndex,
         }
     }
 }

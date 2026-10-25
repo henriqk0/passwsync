@@ -142,3 +142,73 @@ fn unknown_types_and_trailing_bytes_fail() {
         );
     }
 }
+
+// --- 004 T030: sync frames under attack and in the wrong state ---
+
+mod sync_frames {
+    use super::support::channel::{connect_v2, key, name};
+    use device_link::channel::{ChannelDialer, ChannelError, ChannelResponder};
+    use device_link::wire::{HelloVersion, Payload};
+
+    fn ctl(byte: u8) -> Payload {
+        Payload::SyncCtl {
+            more: false,
+            fragment: vec![byte],
+        }
+    }
+
+    #[test]
+    fn replayed_and_reordered_sync_frames_fail() {
+        let (a, b) = (key(1), key(2));
+        let mut ends = connect_v2(&a, &b);
+        let first = ends.dialer.seal_sync(&ctl(1)).unwrap();
+        assert!(ends.responder.open(&first).is_ok());
+        assert_eq!(
+            ends.responder.open(&first).err(),
+            Some(ChannelError::Crypto)
+        );
+        let mut ends = connect_v2(&a, &b);
+        let _skipped = ends.dialer.seal_sync(&ctl(1)).unwrap();
+        let second = ends.dialer.seal_sync(&ctl(2)).unwrap();
+        assert_eq!(
+            ends.responder.open(&second).err(),
+            Some(ChannelError::Crypto)
+        );
+    }
+
+    #[test]
+    fn malformed_sync_frames_close_the_channel() {
+        let (a, b) = (key(1), key(2));
+        for plain in [&[0x20u8, 0][..], &[0x20, 3, 1], &[0x21], &[0x22, 1]] {
+            let mut ends = connect_v2(&a, &b);
+            let frame = ends.dialer.seal_any(plain).unwrap();
+            assert_eq!(
+                ends.responder.open(&frame).err(),
+                Some(ChannelError::Protocol)
+            );
+            assert!(ends.responder.is_closed());
+        }
+    }
+
+    #[test]
+    fn sync_payloads_before_the_handshake_completes_fail() {
+        let (a, b) = (key(1), key(2));
+        // Instead of Welcome, the dialer gets a sync frame.
+        let mut dialer =
+            ChannelDialer::start_version(&a, *b.public(), name("Laptop"), HelloVersion::V2)
+                .unwrap();
+        let out = dialer.outgoing();
+        let mut responder = ChannelResponder::new(&b, name("Phone"), &out[0]);
+        let pinned = *a.public();
+        let is_pinned = move |k: &[u8; 32]| *k == pinned;
+        responder.on_frame(&out[1], &is_pinned).unwrap();
+        dialer.on_frame(&responder.outgoing()[0]).unwrap();
+        let mut responder_channel = responder
+            .on_frame(&dialer.outgoing()[0], &is_pinned)
+            .unwrap()
+            .unwrap();
+        let _welcome = responder.outgoing();
+        let sync = responder_channel.seal_sync(&ctl(1)).unwrap();
+        assert!(dialer.on_frame(&sync).is_err());
+    }
+}

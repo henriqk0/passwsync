@@ -18,7 +18,7 @@ fn damaged_files_are_listed_and_do_not_affect_other_wallets() {
     fx.dir.insert(&truncated, &bytes[..bytes.len() - 3]);
     let future = foreign_wallet(&fx, "Future", KdfConfig::MINIMUM, &[]);
     let mut bytes = fx.dir.bytes(&future).unwrap();
-    bytes[4] = 2;
+    bytes[4] = 3; // 004: version 2 is the current format; 3 is the first unknown one
     fx.dir.insert(&future, &bytes);
 
     let names: Vec<WalletStatus> = fx.service.list().unwrap();

@@ -51,6 +51,8 @@ pub struct EntrySummary {
     pub title: Zeroizing<String>,
     pub username: Zeroizing<String>,
     pub url: Zeroizing<String>,
+    /// 004: the credential has concurrent versions (FR-035).
+    pub conflicted: bool,
 }
 
 /// One credential's details, without the password.
@@ -91,14 +93,15 @@ impl Field {
     }
 }
 
-fn copy(text: &str) -> Zeroizing<String> {
+pub(crate) fn copy(text: &str) -> Zeroizing<String> {
     Zeroizing::new(text.to_owned())
 }
 
-enum Slot {
+pub(crate) enum Slot {
     Locked,
     Unlocked {
-        vault: Vault,
+        /// Boxed: a vault is much larger than the locked variant.
+        vault: Box<Vault>,
         /// Monotonic time of the last deliberate action.
         last_activity: Duration,
     },
@@ -106,9 +109,9 @@ enum Slot {
 
 /// One wallet's state plus the lock that serializes its unlock attempts, so a key
 /// derivation never holds the state lock that list and lock need.
-struct WalletSlot {
-    state: Mutex<Slot>,
-    attempts: Mutex<()>,
+pub(crate) struct WalletSlot {
+    pub(crate) state: Mutex<Slot>,
+    pub(crate) attempts: Mutex<()>,
 }
 
 impl WalletSlot {
@@ -120,9 +123,9 @@ impl WalletSlot {
     }
 }
 
-type SlotRef = Arc<WalletSlot>;
+pub(crate) type SlotRef = Arc<WalletSlot>;
 
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
@@ -137,17 +140,20 @@ impl Clock for SharedClock {
 
 /// Application use cases over the wallets in one directory. Shared across threads.
 pub struct Service {
-    dir: Arc<dyn WalletDirectory>,
+    pub(crate) dir: Arc<dyn WalletDirectory>,
     clock: Arc<dyn Clock>,
-    elapsed: Arc<dyn ElapsedClock>,
-    config: ServiceConfig,
+    pub(crate) elapsed: Arc<dyn ElapsedClock>,
+    pub(crate) config: ServiceConfig,
     slots: Mutex<BTreeMap<WalletName, SlotRef>>,
     /// Serializes wallet creation (check name free → KDF → first save → register).
     create_lock: Mutex<()>,
-    kdf_gate: Mutex<()>,
+    /// One key derivation or merge at a time, service-wide (memory budget, 004 T058).
+    pub(crate) kdf_gate: Mutex<()>,
     kdf_active: Arc<AtomicUsize>,
     /// `boottime - monotonic` when a suspend was last accounted for.
     suspend_offset: Mutex<Duration>,
+    /// 004: the host's pending-copy port (none: no sync).
+    pub(crate) pending: Mutex<Option<Arc<dyn crate::PendingCopies>>>,
 }
 
 /// More time than this between the two clocks means the computer was suspended.
@@ -174,14 +180,24 @@ impl Service {
             create_lock: Mutex::new(()),
             kdf_gate: Mutex::new(()),
             kdf_active: Arc::new(AtomicUsize::new(0)),
+            pending: Mutex::new(None),
         }
+    }
+
+    /// 004: connects the sync layer (pending copies, unlock notification).
+    pub fn set_pending_copies(&self, port: Arc<dyn crate::PendingCopies>) {
+        *lock(&self.pending) = Some(port);
+    }
+
+    pub(crate) fn pending_port(&self) -> Option<Arc<dyn crate::PendingCopies>> {
+        lock(&self.pending).clone()
     }
 
     pub fn config(&self) -> &ServiceConfig {
         &self.config
     }
 
-    fn vault_clock(&self) -> Box<dyn Clock> {
+    pub(crate) fn vault_clock(&self) -> Box<dyn Clock> {
         Box::new(SharedClock(Arc::clone(&self.clock)))
     }
 
@@ -249,14 +265,14 @@ impl Service {
                 .or_insert_with(|| WalletSlot::new(Slot::Locked)),
         );
         *lock(&slot.state) = Slot::Unlocked {
-            vault,
+            vault: Box::new(vault),
             last_activity: self.elapsed.monotonic(),
         };
         Ok(name)
     }
 
     /// Runs one key derivation at a time, service-wide.
-    fn derive<T>(
+    pub(crate) fn derive<T>(
         &self,
         run: impl FnOnce() -> Result<T, vault_core::VaultError>,
     ) -> Result<T, ServiceError> {
@@ -298,16 +314,20 @@ impl Service {
         if peek_kdf_config(&bytes)?.memory_kib > KDF_MEMORY_CAP_KIB {
             return Err(ServiceError::KdfParamsOutOfRange);
         }
-        let vault = self.derive(|| {
+        let mut vault = self.derive(|| {
+            // A copy wiped on drop: the password is still needed for pending copies (004).
             Vault::unlock(
                 &bytes,
-                MasterPassword::new(take(password)),
+                MasterPassword::new(password.as_str().to_owned()),
                 self.config.device.clone(),
                 self.vault_clock(),
             )
         })?;
+        self.after_unlock(name, &bytes, &vault);
+        self.merge_pending_at_unlock(name, &mut vault, &password);
+        drop(password);
         *lock(&slot.state) = Slot::Unlocked {
-            vault,
+            vault: Box::new(vault),
             last_activity: self.elapsed.monotonic(),
         };
         Ok(UnlockOutcome::Unlocked)
@@ -325,7 +345,7 @@ impl Service {
     }
 
     /// The slot for `name`, created (locked) if the directory lists the wallet.
-    fn slot(&self, name: &WalletName) -> Result<SlotRef, ServiceError> {
+    pub(crate) fn slot(&self, name: &WalletName) -> Result<SlotRef, ServiceError> {
         if let Some(slot) = lock(&self.slots).get(name) {
             return Ok(Arc::clone(slot));
         }
@@ -340,7 +360,7 @@ impl Service {
     }
 
     /// Runs a deliberate action on an unlocked wallet and records the activity.
-    fn with_unlocked<T>(
+    pub(crate) fn with_unlocked<T>(
         &self,
         name: &WalletName,
         action: impl FnOnce(&mut Vault) -> Result<T, ServiceError>,
@@ -391,6 +411,7 @@ impl Service {
                         title: copy(&f.title),
                         username: copy(&f.username),
                         url: copy(&f.url),
+                        conflicted: entry.is_conflicted(),
                     })
                 })
                 .collect())
@@ -545,6 +566,6 @@ impl Service {
 }
 
 /// Moves the string out of its `Zeroizing` wrapper without copying the bytes.
-fn take(mut secret: Zeroizing<String>) -> String {
+pub(crate) fn take(mut secret: Zeroizing<String>) -> String {
     std::mem::take(&mut *secret)
 }

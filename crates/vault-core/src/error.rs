@@ -38,6 +38,16 @@ pub enum VaultError {
     Storage(#[from] StorageError),
     #[error("secure random source failure")]
     Rng,
+    #[error("a wallet may be changed by at most 256 devices")]
+    TooManyDevices,
+    #[error("change counter overflow")]
+    CounterOverflow,
+    #[error("entry has conflicting versions; resolve the conflict first")]
+    EntryConflicted,
+    #[error("entry is not conflicted")]
+    NotConflicted,
+    #[error("no such version of the entry")]
+    InvalidVersionIndex,
 }
 
 #[cfg(test)]

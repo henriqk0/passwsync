@@ -447,7 +447,11 @@ fn revoke(state: &AppState, id: &str) -> Response {
         return not_found();
     };
     match state.net.revoke(&id) {
-        Ok(()) => ok_empty(),
+        Ok(()) => {
+            // 004: sync with it stops; its pending copies and record lines are deleted.
+            state.sync.revoke(&id);
+            ok_empty()
+        }
         Err(RevokeError::NotFound) => not_found(),
         Err(RevokeError::Storage) => fail(
             500,

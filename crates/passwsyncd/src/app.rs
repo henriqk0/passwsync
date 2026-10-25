@@ -11,7 +11,7 @@ use std::sync::{Arc, Condvar, Mutex, PoisonError};
 
 use rustix::fs::{FlockOperation, flock};
 use vault_core::{KdfConfig, SystemClock};
-use wallet_service::{ElapsedClock, Service, ServiceConfig, Sessions};
+use wallet_service::{ElapsedClock, Service, ServiceConfig, Sessions, WalletDirectory};
 
 use crate::clock::OsElapsedClock;
 use crate::config::{self, ConfigError};
@@ -23,6 +23,7 @@ use crate::log::{ErrorClass, LockReason, Log, LogEvent, Protection, Rejections};
 use crate::net_runtime::{NetDeps, NetRuntime};
 use crate::paths::{self, Env, PathError, Paths};
 use crate::signals::{self, SignalThread};
+use crate::sync_runtime::{JournalingDirectory, SyncRuntime};
 
 pub const USAGE: &str = "Usage: passwsyncd [--help | --version]\n\
 Runs the local passwsync service on 127.0.0.1 in the foreground until SIGTERM, SIGINT or SIGHUP.\n\
@@ -186,6 +187,11 @@ impl Running {
         );
     }
 
+    /// Test hook: the next sync-record write fails at `step` (crash-injection tests).
+    pub fn inject_sync_fault(&self, step: crate::sync_store::WriteStep) {
+        self.state.sync.shared().store.inject(step);
+    }
+
     pub fn stopper(&self) -> Stopper {
         self.stopper.clone()
     }
@@ -199,6 +205,8 @@ impl Running {
         }
         self.server.shutdown();
         let _ = self.sweeper.join();
+        // 004: sync threads stop (rounds aborted) before the network closes.
+        self.state.sync.stop();
         // 003: network down, key and code wiped, before wallets are locked.
         self.state.net.stop();
         for wallet in &self.state.service.lock_all() {
@@ -273,8 +281,20 @@ fn start_with(deps: Deps, stopper: Stopper, with_signals: bool) -> Result<Runnin
     let sessions = Sessions::new().map_err(|_| StartError::Fatal("secure random source"))?;
     pages::write_launch_file(&paths.launch_file, settings.port, sessions.launch_token())
         .map_err(|_| StartError::Path(PathError::new(&paths.launch_file, "cannot be written")))?;
-    let service = Arc::new(Service::new(
+    // 004: every save goes through the journaling directory (inactive with networking off).
+    let sync = Arc::new(SyncRuntime::new(
+        paths.sync_dir.clone(),
+        paths.wallets_dir.clone(),
+        Arc::clone(&net),
+        log.clone(),
+        settings.sync_interval,
+    ));
+    let wallets: Arc<dyn WalletDirectory> = Arc::new(JournalingDirectory::new(
         Arc::new(FsWalletDirectory::new(paths.wallets_dir.clone())),
+        sync.shared(),
+    ));
+    let service = Arc::new(Service::new(
+        wallets,
         Arc::new(SystemClock),
         Arc::clone(&elapsed),
         ServiceConfig {
@@ -283,6 +303,11 @@ fn start_with(deps: Deps, stopper: Stopper, with_signals: bool) -> Result<Runnin
             auto_lock: settings.auto_lock,
         },
     ));
+    sync.attach(&service);
+    // 5c/5d: sync only while networking is on (FR-001).
+    if net.settings.enabled && net.key_held() {
+        sync.start();
+    }
     let state = Arc::new(AppState {
         port: settings.port,
         settings,
@@ -293,6 +318,7 @@ fn start_with(deps: Deps, stopper: Stopper, with_signals: bool) -> Result<Runnin
         elapsed,
         service,
         net,
+        sync,
     });
     let sweeper = crate::sweeper::spawn(
         Arc::clone(&state.service),

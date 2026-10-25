@@ -41,7 +41,8 @@ fn vault_saved_to_a_file_opens_again() {
     assert_eq!(entry.fields().unwrap().password, "PASSWORD-MARKER-123");
 
     let file = std::fs::read(&path).unwrap();
-    assert_eq!(file[..7], [0x50, 0x57, 0x53, 0x56, 0x01, 0x00, 0x01]);
+    // 004: writers produce format version 2 (same header layout as version 1).
+    assert_eq!(file[..7], [0x50, 0x57, 0x53, 0x56, 0x02, 0x00, 0x01]);
     for marker in [
         "PASSWORD-MARKER-123",
         "NOTES-MARKER-456",

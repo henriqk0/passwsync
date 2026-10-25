@@ -3,6 +3,7 @@
 
 pub mod api;
 pub mod api_network;
+pub mod api_sync;
 pub mod guard;
 pub mod pages;
 pub mod request;
@@ -28,6 +29,8 @@ pub struct AppState {
     pub elapsed: Arc<dyn ElapsedClock>,
     pub service: Arc<Service>,
     pub net: Arc<crate::net_runtime::NetRuntime>,
+    /// 004: wallet sync (inactive while networking is off).
+    pub sync: Arc<crate::sync_runtime::SyncRuntime>,
 }
 
 impl AppState {

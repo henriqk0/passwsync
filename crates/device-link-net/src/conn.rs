@@ -9,7 +9,7 @@ use device_link::error::DropReason;
 use device_link::identity::DeviceId;
 use device_link::link::keep_existing;
 use device_link::pairing::{InitiatorState, PairingInitiator, Role};
-use device_link::wire::{CloseReason, HelloKind, Payload, parse_hello};
+use device_link::wire::{CloseReason, HelloKind, Payload, parse_hello_versioned};
 
 use crate::framed::{FrameError, read_frame, write_frame};
 use crate::{ChannelEntry, Disconnect, NetEvent, Shared, UnauthSlot};
@@ -31,9 +31,10 @@ pub(crate) fn serve(shared: &Arc<Shared>, stream: TcpStream) {
         Ok(hello) => hello,
         Err(error) => return count_frame_error(shared, error),
     };
-    match parse_hello(&hello) {
-        Ok(HelloKind::Pairing) => serve_pairing(shared, &stream, &hello),
-        Ok(HelloKind::Channel) => serve_channel(shared, stream, &hello, &mut unauth),
+    // 004: channel Hello v1 and v2 are accepted; pairing stays v1 (contracts/sync-protocol.md).
+    match parse_hello_versioned(&hello) {
+        Ok((HelloKind::Pairing, _)) => serve_pairing(shared, &stream, &hello),
+        Ok((HelloKind::Channel, _)) => serve_channel(shared, stream, &hello, &mut unauth),
         Err(_) => shared.counters.count(DropReason::Malformed),
     }
 }
@@ -205,16 +206,21 @@ pub(crate) fn register(
     stream: &TcpStream,
     channel: Channel,
     dialed: Option<SocketAddrV4>,
-) -> Option<(u64, DeviceId, Arc<Mutex<Channel>>)> {
+) -> Option<Registered> {
     let id = channel.peer_id();
     let dialer = channel.dialer_id();
     let peer_name = channel.peer_name().clone();
+    let sync = channel.sync_enabled();
+    let (session, is_dialer) = (channel.session_hash(), channel.is_dialer());
     let channel = Arc::new(Mutex::new(channel));
+    let last_sent = Arc::new(Mutex::new(shared.mono.now()));
     let entry = ChannelEntry {
         conn: 0,
         dialer,
         stream: stream.try_clone().ok()?,
         channel: Arc::clone(&channel),
+        last_sent: Arc::clone(&last_sent),
+        sync,
     };
     let now_unix = shared.wall.unix_now();
     let mut state = shared.lock();
@@ -242,27 +248,54 @@ pub(crate) fn register(
     let _ = link.on_name_update(registry, &id, peer_name);
     drop(state);
     shared.events.emit(NetEvent::PeerConnected(id));
-    Some((conn, id, channel))
+    if sync {
+        if let Some(sink) = shared.sync_sink() {
+            sink.channel_up(id, conn, session, is_dialer);
+        }
+    }
+    Some(Registered {
+        conn,
+        id,
+        channel,
+        last_sent,
+        sync,
+    })
+}
+
+/// An authenticated channel as registered (connection number and shared parts).
+pub(crate) struct Registered {
+    pub conn: u64,
+    pub id: DeviceId,
+    pub channel: Arc<Mutex<Channel>>,
+    pub last_sent: Arc<Mutex<std::time::Duration>>,
+    pub sync: bool,
 }
 
 use crate::State;
 
 /// The channel's life: keepalives, idle close, name updates, close (R10). Blocking reads
 /// with a timeout until the next deadline; no polling (FR-039).
-pub(crate) fn run_channel(
-    shared: &Arc<Shared>,
-    stream: TcpStream,
-    (conn, id, channel): (u64, DeviceId, Arc<Mutex<Channel>>),
-) {
+pub(crate) fn run_channel(shared: &Arc<Shared>, stream: TcpStream, registered: Registered) {
+    let Registered {
+        conn,
+        id,
+        channel,
+        last_sent: sent_clock,
+        sync,
+    } = registered;
     let timing = shared.timing;
-    let mut last_sent = shared.mono.now();
-    let mut last_received = last_sent;
+    let last_sent = || {
+        *sent_clock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    };
+    let mut last_received = shared.mono.now();
     let why = loop {
         if shared.stopping() {
             break Disconnect::Closed;
         }
         let now = shared.mono.now();
-        let keepalive = (last_sent + timing.keepalive).saturating_sub(now);
+        let keepalive = (last_sent() + timing.keepalive).saturating_sub(now);
         let idle = (last_received + timing.idle_close).saturating_sub(now);
         let wait = keepalive.min(idle).max(Duration::from_millis(5));
         let read = read_frame(&stream, wait);
@@ -289,6 +322,12 @@ pub(crate) fn run_channel(
                             CloseReason::Shutdown => Disconnect::Closed,
                         };
                     }
+                    // 004: sync frames (accepted by `open` only on channel v2).
+                    Ok(payload @ (Payload::SyncCtl { .. } | Payload::CopyData { .. })) => {
+                        if let Some(sink) = shared.sync_sink() {
+                            sink.frame(id, conn, payload);
+                        }
+                    }
                     Ok(_) | Err(_) => break Disconnect::Error,
                 }
                 let now_unix = shared.wall.unix_now();
@@ -299,14 +338,19 @@ pub(crate) fn run_channel(
                 if now.saturating_sub(last_received) >= timing.idle_close {
                     break Disconnect::Timeout;
                 }
-                if now.saturating_sub(last_sent) >= timing.keepalive {
-                    let sent = channel
-                        .lock()
-                        .ok()
-                        .and_then(|mut c| c.seal(&Payload::Keepalive).ok());
+                if now.saturating_sub(last_sent()) >= timing.keepalive {
+                    // Seal and write under the channel mutex (as `send_sync` does).
+                    let sent = channel.lock().ok().and_then(|mut c| {
+                        let frame = c.seal(&Payload::Keepalive).ok()?;
+                        write_frame(&stream, &frame).ok()
+                    });
                     match sent {
-                        Some(frame) if write_frame(&stream, &frame).is_ok() => last_sent = now,
-                        _ => break Disconnect::Error,
+                        Some(()) => {
+                            *sent_clock
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner) = now;
+                        }
+                        None => break Disconnect::Error,
                     }
                 }
             }
@@ -326,6 +370,11 @@ pub(crate) fn run_channel(
     }
     let still_paired = state.registry.contains(&id);
     drop(state);
+    if sync {
+        if let Some(sink) = shared.sync_sink() {
+            sink.channel_down(id, conn);
+        }
+    }
     if current && still_paired && !shared.stopping() {
         shared.events.emit(NetEvent::PeerDisconnected(id, why));
     }

@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
 use aes_gcm::aead::{AeadInPlace, KeyInit};
 use aes_gcm::{Aes256Gcm, Nonce};
@@ -6,19 +6,27 @@ use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
+use crate::entry::EntryV1;
 use crate::kdf::derive_key;
-use crate::{Entry, KdfConfig, MasterPassword, Timestamp, VaultError, VaultKey, WalletId};
+use crate::{
+    DeviceId, Entry, KdfConfig, MasterPassword, StateVector, Timestamp, VaultError, VaultKey,
+    VersionVector, WalletId,
+};
 
 const MAGIC: &[u8; 4] = b"PWSV";
-const FORMAT_VERSION: u16 = 1;
+/// Version written by this build (004, contracts/file-format-v2.md).
+pub(crate) const FORMAT_VERSION: u16 = 2;
+const FORMAT_V1: u16 = 1;
 const KDF_ARGON2ID: u8 = 1;
-const HEADER_LEN: usize = 63;
+pub(crate) const HEADER_LEN: usize = 63;
 const TAG_LEN: usize = 16;
 const MIN_FILE_LEN: usize = HEADER_LEN + TAG_LEN;
 const MAX_FILE_LEN: usize = 64 * 1024 * 1024;
 
-/// Plaintext, authenticated file header (see contracts/file-format.md).
+/// Plaintext, authenticated file header (see contracts/file-format.md). Version 2 keeps the
+/// v1 layout; only the version field differs (no sync metadata in clear, research R2).
 pub(crate) struct Header {
+    pub version: u16,
     pub kdf: KdfConfig,
     pub salt: [u8; 32],
     pub nonce: [u8; 12],
@@ -28,7 +36,7 @@ impl Header {
     pub fn encode(&self) -> [u8; HEADER_LEN] {
         let mut bytes = [0u8; HEADER_LEN];
         bytes[0..4].copy_from_slice(MAGIC);
-        bytes[4..6].copy_from_slice(&FORMAT_VERSION.to_le_bytes());
+        bytes[4..6].copy_from_slice(&self.version.to_le_bytes());
         bytes[6] = KDF_ARGON2ID;
         bytes[7..11].copy_from_slice(&self.kdf.memory_kib.to_le_bytes());
         bytes[11..15].copy_from_slice(&self.kdf.iterations.to_le_bytes());
@@ -44,7 +52,7 @@ impl Header {
             return Err(VaultError::MalformedFile);
         }
         let version = u16::from_le_bytes([bytes[4], bytes[5]]);
-        if version != FORMAT_VERSION {
+        if version != FORMAT_V1 && version != FORMAT_VERSION {
             return Err(VaultError::UnsupportedVersion(version));
         }
         if bytes[6] != KDF_ARGON2ID {
@@ -57,6 +65,7 @@ impl Header {
         };
         kdf.validate()?;
         Ok(Self {
+            version,
             kdf,
             salt: bytes[19..51].try_into().expect("32-byte slice"),
             nonce: bytes[51..63].try_into().expect("12-byte slice"),
@@ -71,40 +80,114 @@ pub fn peek_kdf_config(bytes: &[u8]) -> Result<KdfConfig, VaultError> {
     Header::parse(bytes).map(|header| header.kdf)
 }
 
+/// The (unauthenticated) format version of wallet bytes, read without any password: 1 or 2.
+/// Used only to tell the person that a version 1 wallet is not synced yet.
+pub fn peek_format_version(bytes: &[u8]) -> Result<u16, VaultError> {
+    Header::parse(bytes).map(|header| header.version)
+}
+
 fn u32_at(bytes: &[u8], offset: usize) -> u32 {
     u32::from_le_bytes(bytes[offset..offset + 4].try_into().expect("4-byte slice"))
 }
 
-/// Encrypted body, borrowed for sealing so entries are not copied.
+/// Encrypted body (v2), borrowed for sealing so entries are not copied.
 #[derive(Serialize)]
 pub(crate) struct PayloadRef<'a> {
     pub wallet_id: WalletId,
     pub created_at: Timestamp,
+    pub state: &'a StateVector,
+    pub password_epoch: &'a VersionVector,
     pub entries: &'a [Entry],
 }
 
-/// Encrypted body as read back.
-#[derive(Deserialize)]
+/// Encrypted body as read back (v1 bodies are converted on read).
 pub(crate) struct Payload {
     pub wallet_id: WalletId,
     pub created_at: Timestamp,
+    pub state: StateVector,
+    pub password_epoch: VersionVector,
     pub entries: Vec<Entry>,
+    /// Format version of the file it came from.
+    pub format: u16,
 }
 
-impl Payload {
+#[derive(Deserialize)]
+struct PayloadV2 {
+    wallet_id: WalletId,
+    created_at: Timestamp,
+    state: StateVector,
+    password_epoch: VersionVector,
+    entries: Vec<Entry>,
+}
+
+#[derive(Deserialize)]
+struct PayloadV1 {
+    wallet_id: WalletId,
+    created_at: Timestamp,
+    entries: Vec<EntryV1>,
+}
+
+fn unique_ids(entries: &[Entry]) -> bool {
+    let mut seen = HashSet::with_capacity(entries.len());
+    entries.iter().all(|entry| seen.insert(entry.id()))
+}
+
+impl PayloadV2 {
     /// The body is authentic here, so a failure means a bug or a forged-but-valid file; it is
-    /// reported with the same generic error. Version vectors are checked while decoding.
-    fn validate(&self) -> Result<(), VaultError> {
-        let mut seen = HashSet::new();
-        for entry in &self.entries {
-            let fields_valid = entry
+    /// reported with the same generic error. Entry invariants were checked while decoding.
+    fn validate(self) -> Result<Payload, VaultError> {
+        let within_state = self.entries.iter().all(|entry| {
+            entry.versions().iter().all(|version| {
+                version
+                    .version()
+                    .iter()
+                    .all(|(device, counter)| self.state.get(device) >= counter)
+            })
+        });
+        if !unique_ids(&self.entries) || !within_state {
+            return Err(VaultError::InvalidPasswordOrCorrupted);
+        }
+        Ok(Payload {
+            wallet_id: self.wallet_id,
+            created_at: self.created_at,
+            state: self.state,
+            password_epoch: self.password_epoch,
+            entries: self.entries,
+            format: FORMAT_VERSION,
+        })
+    }
+}
+
+impl PayloadV1 {
+    /// Each entry becomes a single current version; `state[d]` is the exact number of changes
+    /// `d` made (the sum of its entry counters, research R3).
+    fn convert(self) -> Result<Payload, VaultError> {
+        let corrupt = || VaultError::InvalidPasswordOrCorrupted;
+        let entries: Vec<Entry> = self.entries.into_iter().map(EntryV1::into_entry).collect();
+        let valid = entries.iter().all(|entry| {
+            entry
                 .fields()
-                .is_none_or(|fields| fields.validate().is_ok());
-            if !seen.insert(entry.id()) || !fields_valid {
-                return Err(VaultError::InvalidPasswordOrCorrupted);
+                .is_none_or(|fields| fields.validate().is_ok())
+        });
+        if !unique_ids(&entries) || !valid {
+            return Err(corrupt());
+        }
+        let mut sums: BTreeMap<DeviceId, u64> = BTreeMap::new();
+        for entry in &entries {
+            for (device, counter) in entry.version().iter() {
+                let slot = sums.entry(device.clone()).or_insert(0);
+                *slot = slot.checked_add(counter).ok_or_else(corrupt)?;
             }
         }
-        Ok(())
+        let state = StateVector::from_pairs(sums.into_iter().collect()).map_err(|_| corrupt())?;
+        Ok(Payload {
+            wallet_id: self.wallet_id,
+            created_at: self.created_at,
+            state,
+            password_epoch: VersionVector::empty(),
+            entries,
+            format: FORMAT_V1,
+        })
     }
 }
 
@@ -126,11 +209,12 @@ pub(crate) fn seal(
     let mut plaintext = Zeroizing::new(Vec::with_capacity(size + TAG_LEN));
     plaintext.resize(size, 0);
     postcard::to_slice(payload, &mut plaintext).map_err(|_| VaultError::MalformedFile)?;
-    seal_plaintext(key, kdf, salt, plaintext)
+    seal_plaintext(key, FORMAT_VERSION, kdf, salt, plaintext)
 }
 
-fn seal_plaintext(
+pub(crate) fn seal_plaintext(
     key: &VaultKey,
+    version: u16,
     kdf: KdfConfig,
     salt: &[u8; 32],
     mut buffer: Zeroizing<Vec<u8>>,
@@ -140,6 +224,7 @@ fn seal_plaintext(
         .try_fill_bytes(&mut nonce)
         .map_err(|_| VaultError::Rng)?;
     let header = Header {
+        version,
         kdf,
         salt: *salt,
         nonce,
@@ -160,6 +245,7 @@ pub(crate) fn open_with_key(
     header: &Header,
     key: &VaultKey,
 ) -> Result<Payload, VaultError> {
+    let corrupt = || VaultError::InvalidPasswordOrCorrupted;
     let mut buffer = Zeroizing::new(bytes[HEADER_LEN..].to_vec());
     cipher(key)?
         .decrypt_in_place(
@@ -167,14 +253,20 @@ pub(crate) fn open_with_key(
             &bytes[..HEADER_LEN],
             &mut *buffer,
         )
-        .map_err(|_| VaultError::InvalidPasswordOrCorrupted)?;
-    let (payload, rest) = postcard::take_from_bytes::<Payload>(&buffer)
-        .map_err(|_| VaultError::InvalidPasswordOrCorrupted)?;
-    if !rest.is_empty() {
-        return Err(VaultError::InvalidPasswordOrCorrupted);
+        .map_err(|_| corrupt())?;
+    if header.version == FORMAT_V1 {
+        let (payload, rest) =
+            postcard::take_from_bytes::<PayloadV1>(&buffer).map_err(|_| corrupt())?;
+        if !rest.is_empty() {
+            return Err(corrupt());
+        }
+        return payload.convert();
     }
-    payload.validate()?;
-    Ok(payload)
+    let (payload, rest) = postcard::take_from_bytes::<PayloadV2>(&buffer).map_err(|_| corrupt())?;
+    if !rest.is_empty() {
+        return Err(corrupt());
+    }
+    payload.validate()
 }
 
 /// Full unlock: parse the header, derive the key from `password`, decrypt.
@@ -212,6 +304,7 @@ mod tests {
     #[test]
     fn header_is_63_bytes_with_documented_offsets() {
         let header = Header {
+            version: 1,
             kdf: KdfConfig::DEFAULT,
             salt: [9; 32],
             nonce: [5; 12],
@@ -231,6 +324,7 @@ mod tests {
     #[test]
     fn header_parse_round_trips() {
         let header = Header {
+            version: 2,
             kdf: KdfConfig::MINIMUM,
             salt: [3; 32],
             nonce: [4; 12],
@@ -247,9 +341,14 @@ mod tests {
     fn seal_then_open_returns_same_payload() {
         let entries = sample_entries();
         let wallet = WalletId::from_bytes([8; 16]);
+        let mut state = StateVector::new();
+        state.bump(&DeviceId::new("laptop").unwrap()).unwrap();
+        let epoch = VersionVector::empty();
         let payload = PayloadRef {
             wallet_id: wallet,
             created_at: 42,
+            state: &state,
+            password_epoch: &epoch,
             entries: &entries,
         };
         let bytes = seal(&key(1), KdfConfig::MINIMUM, &[7; 32], &payload).unwrap();
@@ -265,9 +364,12 @@ mod tests {
     #[test]
     fn each_seal_uses_a_fresh_nonce() {
         let entries = sample_entries();
+        let (state, epoch) = (StateVector::new(), VersionVector::empty());
         let payload = PayloadRef {
             wallet_id: WalletId::from_bytes([0; 16]),
             created_at: 0,
+            state: &state,
+            password_epoch: &epoch,
             entries: &entries,
         };
         let a = seal(&key(1), KdfConfig::MINIMUM, &[7; 32], &payload).unwrap();
@@ -278,9 +380,12 @@ mod tests {
 
     #[test]
     fn wrong_key_is_the_generic_error() {
+        let (state, epoch) = (StateVector::new(), VersionVector::empty());
         let payload = PayloadRef {
             wallet_id: WalletId::from_bytes([0; 16]),
             created_at: 0,
+            state: &state,
+            password_epoch: &epoch,
             entries: &[],
         };
         let bytes = seal(&key(1), KdfConfig::MINIMUM, &[7; 32], &payload).unwrap();
@@ -291,7 +396,7 @@ mod tests {
         ));
     }
 
-    // Authenticated-but-invalid payloads, crafted by mirroring the wire shape.
+    // Authenticated-but-invalid version 1 payloads, crafted by mirroring the wire shape.
     #[derive(serde::Serialize)]
     struct RawPayload {
         wallet_id: [u8; 16],
@@ -350,6 +455,7 @@ mod tests {
         plaintext.extend_from_slice(trailing);
         let bytes = seal_plaintext(
             &key(1),
+            1,
             KdfConfig::MINIMUM,
             &[7; 32],
             Zeroizing::new(plaintext),

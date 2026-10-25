@@ -12,11 +12,13 @@ use device_link::name::{DeviceName, InterfaceName};
 use device_link::pairing::{AcceptError, PeerInfo};
 use device_link::policy::AddressPolicy;
 use device_link::registry::PeerRegistry;
+use device_link::wire::Payload;
 use device_link_net::interfaces::{Interface, InterfaceSource, OsInterfaces};
 use device_link_net::{
     Disconnect, EventSink, JoinError, NetEvent, Node, NodeConfig, PairStartError, Refusal,
-    RevokeError, Snapshot, StartError, StdMonoClock, SystemWallClock,
+    RevokeError, SendError, Snapshot, StartError, StdMonoClock, SyncFrameSink, SystemWallClock,
 };
+use wallet_sync::sched::SyncTiming;
 
 use crate::config::NetworkSettings;
 use crate::log::{DisconnectReason, DropLog, Log, LogEvent, NetUnavailable, RefuseReason};
@@ -32,6 +34,8 @@ pub struct NetDeps {
     pub timing: Timing,
     /// Announcement destination ports; empty means `discovery_port`.
     pub announce_ports: Vec<u16>,
+    /// 004: sync scheduler timings (the safety interval comes from the configuration).
+    pub sync: SyncTiming,
 }
 
 impl NetDeps {
@@ -41,6 +45,7 @@ impl NetDeps {
             interfaces: None,
             timing: Timing::default(),
             announce_ports: Vec::new(),
+            sync: SyncTiming::default(),
         }
     }
 }
@@ -114,6 +119,9 @@ impl EventSink for LogSink {
             NetEvent::InterfacesChanged(names) => {
                 log.emit(&LogEvent::InterfacesChanged { interfaces: &names })
             }
+            NetEvent::PeerLegacy(id) => log.emit(&LogEvent::SyncPeerLegacy {
+                fingerprint: &id.fingerprint(),
+            }),
         }
     }
 }
@@ -134,6 +142,8 @@ pub struct NetRuntime {
     /// Held only while networking is on but no local network exists yet (FR-007).
     pending: Mutex<Option<Pending>>,
     drop_log: DropLog,
+    /// 004: where sync frames go; attached to every node this runtime starts.
+    sync_sink: Mutex<Option<Arc<dyn SyncFrameSink>>>,
 }
 
 impl NetRuntime {
@@ -148,6 +158,7 @@ impl NetRuntime {
             node: Mutex::new(None),
             pending: Mutex::new(None),
             drop_log: DropLog::default(),
+            sync_sink: Mutex::new(None),
         };
         let Ok(key) = paths::load_or_create_device_key(&paths.device_key_file) else {
             runtime.set_state(NetState::IdentityUnusable);
@@ -239,6 +250,14 @@ impl NetRuntime {
         match started {
             Ok(node) => {
                 *pending = None;
+                if let Some(sink) = self
+                    .sync_sink
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .clone()
+                {
+                    node.set_sync_sink(sink);
+                }
                 let names: Vec<InterfaceName> = node
                     .snapshot()
                     .interfaces
@@ -377,6 +396,52 @@ impl NetRuntime {
         if let Some(node) = self.node().as_ref() {
             node.clear_warnings();
         }
+    }
+
+    /// 004: the sync timings this runtime was started with.
+    pub fn sync_timing(&self) -> SyncTiming {
+        self.deps.sync
+    }
+
+    /// 004: routes channel-v2 sync frames to `sink` (now and for any node started later).
+    pub fn set_sync_sink(&self, sink: Arc<dyn SyncFrameSink>) {
+        *self
+            .sync_sink
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(Arc::clone(&sink));
+        if let Some(node) = self.node().as_ref() {
+            node.set_sync_sink(sink);
+        }
+    }
+
+    /// 004: sends one sync payload on a channel.
+    pub fn send_sync(
+        &self,
+        peer: &DeviceId,
+        conn: u64,
+        payload: &Payload,
+    ) -> Result<(), SendError> {
+        match self.node().as_ref() {
+            Some(node) => node.send_sync(peer, conn, payload),
+            None => Err(SendError::NotConnected),
+        }
+    }
+
+    /// 004: closes one channel after a sync protocol error.
+    pub fn close_channel(&self, peer: &DeviceId, conn: u64) {
+        if let Some(node) = self.node().as_ref() {
+            node.close_channel(peer, conn);
+        }
+    }
+
+    /// 004: number of paired (pinned) devices; 0 while networking is not running.
+    pub fn paired_count(&self) -> usize {
+        self.snapshot().map_or(0, |s| s.paired.len())
+    }
+
+    /// 004: whether `peer` is currently treated as v1-only ("sync unsupported by peer").
+    pub fn is_legacy(&self, peer: &DeviceId) -> bool {
+        self.node().as_ref().is_some_and(|n| n.is_legacy(peer))
     }
 
     /// Shutdown: close the network (Close(shutdown) on channels, sockets closed, last seen

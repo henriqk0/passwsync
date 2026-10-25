@@ -228,3 +228,124 @@ fn edits_and_tombstones_survive_save_and_open() {
     assert_eq!(tombstone.deleted_at(), Some(1_010));
     assert_eq!(opened.all_records().count(), 2);
 }
+
+// --- 004 T015: every local change moves this device's counter in the state vector ---
+
+#[test]
+fn local_changes_bump_the_state_and_the_touched_version() {
+    let (mut vault, _) = setup();
+    assert!(vault.state().is_empty(), "a new wallet has no change yet");
+    let id = vault.add_entry(fields("a", "", "", "", "")).unwrap();
+    assert_eq!(vault.state().get(&device("laptop")), 1);
+    vault.update_entry(id, fields("b", "", "", "", "")).unwrap();
+    assert_eq!(vault.state().get(&device("laptop")), 2);
+    assert_eq!(vault.get(id).unwrap().version().get(&device("laptop")), 2);
+    vault.delete_entry(id).unwrap();
+    assert_eq!(vault.state().get(&device("laptop")), 3);
+    vault.change_master_password(pw()).unwrap();
+    assert_eq!(vault.state().get(&device("laptop")), 4);
+    assert_eq!(vault.password_epoch().get(&device("laptop")), 1);
+    assert_eq!(vault.state().len(), 1);
+}
+
+#[test]
+fn failed_changes_do_not_bump_the_state() {
+    let (mut vault, _) = setup();
+    assert!(vault.add_entry(fields(" ", "", "", "", "")).is_err());
+    assert!(
+        vault
+            .update_entry(EntryId::from_bytes([9; 16]), fields("x", "", "", "", ""))
+            .is_err()
+    );
+    assert!(vault.delete_entry(EntryId::from_bytes([9; 16])).is_err());
+    assert!(
+        vault
+            .change_master_password(MasterPassword::new("short".into()))
+            .is_err()
+    );
+    assert!(vault.state().is_empty());
+}
+
+#[test]
+fn a_second_device_is_added_to_the_vector_on_its_first_write() {
+    let (mut vault, _) = setup();
+    vault.add_entry(fields("a", "", "", "", "")).unwrap();
+    let bytes = vault.seal().unwrap();
+    let mut other =
+        Vault::unlock(&bytes, pw(), device("phone"), Box::new(FixedClock::new(5))).unwrap();
+    assert_eq!(other.state().len(), 1);
+    other.add_entry(fields("b", "", "", "", "")).unwrap();
+    assert_eq!(other.state().get(&device("phone")), 1);
+    assert_eq!(other.state().get(&device("laptop")), 1);
+}
+
+#[test]
+fn the_257th_device_cannot_write() {
+    // A v1 file whose entries were changed by 256 devices.
+    let (mut vault, _) = setup();
+    let mut bytes = vault.seal().unwrap();
+    for i in 0..256 {
+        let mut v = Vault::unlock(
+            &bytes,
+            pw(),
+            device(&format!("{i:03}")),
+            Box::new(FixedClock::new(1)),
+        )
+        .unwrap();
+        v.add_entry(fields("x", "", "", "", "")).unwrap();
+        bytes = v.seal().unwrap();
+    }
+    vault = Vault::unlock(&bytes, pw(), device("zzz"), Box::new(FixedClock::new(1))).unwrap();
+    assert_eq!(vault.state().len(), 256);
+    assert!(matches!(
+        vault.add_entry(fields("y", "", "", "", "")),
+        Err(VaultError::TooManyDevices)
+    ));
+    let count = vault.all_records().count();
+    assert_eq!(count, 256, "nothing added");
+}
+
+// --- 004 T071: conflicted entries in list and search ---
+
+#[test]
+fn conflicted_entries_are_listed_and_searchable_with_their_current_version() {
+    use vault_core::testkit::{copy_of, fork};
+    let (mut base, _) = setup();
+    let id = base.add_entry(fields("shared", "", "", "", "")).unwrap();
+    let mut a = fork(&base, "a", 2_000);
+    let mut b = fork(&base, "b", 3_000);
+    a.update_entry(id, fields("alpha edit", "ua", "", "", ""))
+        .unwrap();
+    b.update_entry(id, fields("bravo edit", "ub", "", "", ""))
+        .unwrap();
+    a.merge(copy_of(&b)).unwrap();
+    let listed = a.list();
+    assert_eq!(listed.len(), 1);
+    assert!(listed[0].is_conflicted());
+    assert_eq!(
+        listed[0].fields().unwrap().title,
+        "bravo edit",
+        "current version"
+    );
+    assert_eq!(a.search("bravo").len(), 1);
+    assert_eq!(
+        a.search("alpha").len(),
+        0,
+        "search reads the current version"
+    );
+    assert_eq!(a.get(id).unwrap().fields().unwrap().username, "ub");
+    // An edit or delete must resolve first (no silent supersede).
+    assert!(matches!(
+        a.update_entry(id, fields("x", "", "", "", "")),
+        Err(VaultError::EntryConflicted)
+    ));
+    assert!(matches!(
+        a.delete_entry(id),
+        Err(VaultError::EntryConflicted)
+    ));
+    let mut storage = MemoryStorage::new();
+    assert!(matches!(
+        a.update_entry_saved(id, fields("x", "", "", "", ""), &mut storage),
+        Err(VaultError::EntryConflicted)
+    ));
+}

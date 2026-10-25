@@ -17,6 +17,8 @@ pub struct Settings {
     pub auto_lock: Duration,
     pub clipboard_clear: Duration,
     pub network: NetworkSettings,
+    /// 004: safety interval between sync rounds with one peer (FR-027 e).
+    pub sync_interval: Duration,
 }
 
 impl Default for Settings {
@@ -26,6 +28,7 @@ impl Default for Settings {
             auto_lock: Duration::from_secs(15 * 60),
             clipboard_clear: Duration::from_secs(30),
             network: NetworkSettings::default(),
+            sync_interval: Duration::from_secs(60 * 60),
         }
     }
 }
@@ -155,6 +158,7 @@ pub fn parse(text: &str) -> Result<Settings, ConfigError> {
             "port" | "peer_port" | "discovery_port" => Some((1024, 65535, "must be 1024..=65535")),
             "auto_lock_minutes" => Some((1, 240, "must be 1..=240")),
             "clipboard_clear_seconds" => Some((5, 300, "must be 5..=300")),
+            "sync_interval_minutes" => Some((15, 1440, "must be 15..=1440")),
             "network" | "device_name" | "network_interface" => None,
             _ => return Err(ConfigError::new(key, "unknown key")),
         };
@@ -177,6 +181,9 @@ pub fn parse(text: &str) -> Result<Settings, ConfigError> {
                 "peer_port" => settings.network.peer_port = port(),
                 "discovery_port" => settings.network.discovery_port = port(),
                 "auto_lock_minutes" => settings.auto_lock = Duration::from_secs(number * 60),
+                "sync_interval_minutes" => {
+                    settings.sync_interval = Duration::from_secs(number * 60);
+                }
                 _ => settings.clipboard_clear = Duration::from_secs(number),
             }
             continue;

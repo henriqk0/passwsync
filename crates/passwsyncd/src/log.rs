@@ -103,6 +103,28 @@ impl ErrorClass {
     }
 }
 
+/// 004: outcome class of a sync round (closed set).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SyncRoundClass {
+    Ok,
+    Failed,
+    Busy,
+    Timeout,
+    Protocol,
+}
+
+impl SyncRoundClass {
+    pub fn word(self) -> &'static str {
+        match self {
+            Self::Ok => "ok",
+            Self::Failed => "failed",
+            Self::Busy => "busy",
+            Self::Timeout => "timeout",
+            Self::Protocol => "protocol",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RejectionCounts {
     pub host: u64,
@@ -174,6 +196,59 @@ pub enum LogEvent<'a> {
         fingerprint: &'a Fingerprint,
     },
     Dropped(DropCounts),
+    // --- 004 sync events (contracts/host-runtime-sync.md); local wallet names only ---
+    SyncRoundStart {
+        fingerprint: &'a Fingerprint,
+    },
+    SyncRoundEnd {
+        fingerprint: &'a Fingerprint,
+        class: SyncRoundClass,
+        sent: u64,
+        received: u64,
+    },
+    SyncMerged {
+        wallet: &'a WalletName,
+        fingerprint: &'a Fingerprint,
+        conflicts: u32,
+    },
+    SyncPendingStored {
+        wallet: &'a WalletName,
+        fingerprint: &'a Fingerprint,
+    },
+    SyncPossibleRollback {
+        wallet: &'a WalletName,
+    },
+    SyncOlderStateOffered {
+        wallet: &'a WalletName,
+        fingerprint: &'a Fingerprint,
+    },
+    SyncInvalidCopy {
+        wallet: &'a WalletName,
+        fingerprint: &'a Fingerprint,
+    },
+    SyncCannotOpenCopy {
+        wallet: &'a WalletName,
+        fingerprint: &'a Fingerprint,
+    },
+    SyncSelfRollbackRecovered {
+        wallet: &'a WalletName,
+        fingerprint: &'a Fingerprint,
+    },
+    SyncAcceptedOlderState {
+        wallet: &'a WalletName,
+    },
+    SyncStateReset {
+        wallet: &'a WalletName,
+    },
+    SyncRecordCorrupted {
+        wallet: &'a WalletName,
+    },
+    WalletUpgraded {
+        wallet: &'a WalletName,
+    },
+    SyncPeerLegacy {
+        fingerprint: &'a Fingerprint,
+    },
 }
 
 fn write_names(f: &mut fmt::Formatter<'_>, names: &[InterfaceName]) -> fmt::Result {
@@ -272,6 +347,68 @@ impl fmt::Display for LogEvent<'_> {
                 "dropped public={} malformed={} oversized={} overflow={} timeout={}",
                 c.public, c.malformed, c.oversized, c.overflow, c.timeout
             ),
+            Self::SyncRoundStart { fingerprint } => write!(f, "sync round start {fingerprint}"),
+            Self::SyncRoundEnd {
+                fingerprint,
+                class,
+                sent,
+                received,
+            } => write!(
+                f,
+                "sync round end {fingerprint} ({}) sent={sent} received={received}",
+                class.word()
+            ),
+            Self::SyncMerged {
+                wallet,
+                fingerprint,
+                conflicts,
+            } => write!(
+                f,
+                "sync merged wallet={wallet} peer={fingerprint} conflicts={conflicts}"
+            ),
+            Self::SyncPendingStored {
+                wallet,
+                fingerprint,
+            } => write!(f, "sync pending stored wallet={wallet} peer={fingerprint}"),
+            Self::SyncPossibleRollback { wallet } => {
+                write!(f, "sync possible rollback wallet={wallet}")
+            }
+            Self::SyncOlderStateOffered {
+                wallet,
+                fingerprint,
+            } => write!(
+                f,
+                "sync older state offered wallet={wallet} peer={fingerprint}"
+            ),
+            Self::SyncInvalidCopy {
+                wallet,
+                fingerprint,
+            } => write!(f, "sync invalid copy wallet={wallet} peer={fingerprint}"),
+            Self::SyncCannotOpenCopy {
+                wallet,
+                fingerprint,
+            } => write!(
+                f,
+                "sync cannot open copy wallet={wallet} peer={fingerprint}"
+            ),
+            Self::SyncSelfRollbackRecovered {
+                wallet,
+                fingerprint,
+            } => write!(
+                f,
+                "sync self rollback recovered wallet={wallet} peer={fingerprint}"
+            ),
+            Self::SyncAcceptedOlderState { wallet } => {
+                write!(f, "sync accepted older state wallet={wallet}")
+            }
+            Self::SyncStateReset { wallet } => write!(f, "sync state reset wallet={wallet}"),
+            Self::SyncRecordCorrupted { wallet } => {
+                write!(f, "sync record corrupted wallet={wallet}")
+            }
+            Self::WalletUpgraded { wallet } => {
+                write!(f, "wallet upgraded to format 2 wallet={wallet}")
+            }
+            Self::SyncPeerLegacy { fingerprint } => write!(f, "sync peer legacy {fingerprint}"),
         }
     }
 }

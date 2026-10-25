@@ -25,12 +25,15 @@
 #![forbid(unsafe_code)]
 
 mod clock;
+mod copy;
 mod entry;
 mod error;
 mod format;
 mod ids;
 mod kdf;
+mod merge;
 mod secret;
+mod state;
 mod storage;
 #[cfg(feature = "testkit")]
 pub mod testkit;
@@ -38,13 +41,16 @@ mod vault;
 mod version;
 
 pub use clock::{Clock, FixedClock, SystemClock};
-pub use entry::{Entry, EntryFields};
+pub use copy::OpenedCopy;
+pub use entry::{Entry, EntryFields, MAX_VERSIONS, Version};
 pub use error::{StorageError, VaultError};
-pub use format::peek_kdf_config;
+pub use format::{peek_format_version, peek_kdf_config};
 pub use ids::{DeviceId, EntryId, WalletId};
 pub use kdf::KdfConfig;
+pub use merge::{JUMP_BOUND, MergeError, MergeReport, PasswordChoice, Resolution};
 pub use secret::{MasterPassword, VaultKey};
-pub use storage::{MemoryStorage, VaultStorage};
+pub use state::StateVector;
+pub use storage::{MemoryStorage, SaveMeta, VaultStorage};
 pub use vault::Vault;
 pub use version::{VersionOrdering, VersionVector};
 

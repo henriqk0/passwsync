@@ -75,6 +75,8 @@ pub struct Paths {
     /// 003: pinned peers.
     pub peers_file: PathBuf,
     pub wallets_dir: PathBuf,
+    /// 004: sync records and pending copies (contracts/host-runtime-sync.md).
+    pub sync_dir: PathBuf,
     pub runtime_dir: PathBuf,
     pub launch_file: PathBuf,
     pub lock_file: PathBuf,
@@ -108,6 +110,7 @@ impl Paths {
             peers_file: config_dir.join("peers"),
             config_dir,
             wallets_dir: data_home.join("passwsync/wallets"),
+            sync_dir: data_home.join("passwsync/sync"),
             launch_file: runtime_dir.join("launch-url"),
             lock_file: runtime_dir.join("instance.lock"),
             runtime_dir,

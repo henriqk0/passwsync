@@ -87,7 +87,7 @@ function selectedWallet() {
 }
 
 function renderWallets() {
-  const key = JSON.stringify([ui.selected, ui.wallets.map((w) => [w.name, w.unlocked])]);
+  const key = JSON.stringify([ui.selected, ui.wallets.map((w) => [w.name, w.unlocked, w.sync])]);
   if (key === ui.walletsKey) return;
   ui.walletsKey = key;
   const list = $("wallet-list");
@@ -100,6 +100,10 @@ function renderWallets() {
     const open = button(wallet.name, () => selectWallet(wallet.name), "link");
     if (wallet.name === ui.selected) open.setAttribute("aria-current", "true");
     item.append(open, element("span", wallet.unlocked ? "unlocked" : "locked", "badge"));
+    item.append(element("span", syncLabel(wallet.sync), "muted small"));
+    if (wallet.sync && wallet.sync.last_synced_at) {
+      item.append(element("span", "Last synced " + new Date(wallet.sync.last_synced_at * 1000).toLocaleString(), "muted small"));
+    }
     list.append(item);
   }
 }
@@ -122,7 +126,7 @@ function renderWalletView() {
 
 function renderEntries() {
   const unlocked = Boolean(selectedWallet() && selectedWallet().unlocked);
-  const key = JSON.stringify([unlocked, ui.entries.map((e) => [e.id, e.title, e.username])]);
+  const key = JSON.stringify([unlocked, ui.entries.map((e) => [e.id, e.title, e.username, e.conflicted])]);
   if (key === ui.entriesKey) return;
   ui.entriesKey = key;
   const list = $("entry-list");
@@ -131,6 +135,7 @@ function renderEntries() {
     const item = element("li");
     const open = button(entry.title, () => showEntry(entry.id).catch(handleError), "link");
     item.append(open, element("span", entry.username, "muted"));
+    if (entry.conflicted) item.append(element("span", "conflicted", "badge warn"));
     list.append(item);
   }
   if (ui.entries.length === 0 && unlocked) {
@@ -145,6 +150,7 @@ async function loadEntries() {
   if (wallet !== ui.selected) return;
   ui.entries = result.entries;
   renderEntries();
+  loadConflicts().catch(handleError);
 }
 
 function closeDetails() {
@@ -244,6 +250,7 @@ function onWalletLocked() {
   ui.entries = [];
   closeDetails();
   renderEntries();
+  closeConflicts();
 }
 
 function stopCountdown() {
@@ -754,307 +761,360 @@ $("warnings-clear").addEventListener("click", () => netAction("POST", "/api/netw
 netPoll().then(scheduleNetPoll);
 
 refreshState().catch(report);
-  }
+setInterval(poll, POLL_MS);
+setInterval(fastPoll, FAST_POLL_MS);
+
+// --- Wallet sync (004): conflicts, sync status, changes waiting, warnings. ---
+
+const sync = { conflicts: [], conflictsKey: null, conflict: null, revealTimer: null };
+
+function closeConflicts() {
+  clearTimeout(sync.revealTimer);
+  sync.conflicts = [];
+  sync.conflictsKey = null;
+  sync.conflict = null;
+  $("conflict-list").replaceChildren();
+  $("conflict-versions").replaceChildren();
+  $("conflict-actions").replaceChildren();
+  $("conflict-view").hidden = true;
+  $("conflicts-section").hidden = true;
 }
 
-// The selected wallet is locked now: nothing secret may stay on screen or in the clipboard.
-function onWalletLocked() {
-  clearClipboard("lock");
-  hideRevealed();
-  ui.entries = [];
-  closeDetails();
-  renderEntries();
-}
-
-function stopCountdown() {
-  clearTimeout(clip.timer);
-  clearInterval(clip.tick);
-  clip.timer = null;
-  clip.tick = null;
-  $("clipboard-countdown").hidden = true;
-  $("clipboard-countdown").textContent = "";
-}
-
-function showCountdown() {
-  const left = Math.max(0, Math.ceil((clip.deadline - Date.now()) / 1000));
-  const node = $("clipboard-countdown");
-  node.hidden = false;
-  node.textContent = "Clipboard will be cleared in " + left + " s.";
-}
-
-// Empties the clipboard if it still holds what we copied (or if it cannot be read).
-async function clearClipboard(reason) {
-  if (clip.value === "") return;
-  stopCountdown();
-  let cleared = false;
-  try {
-    const current = await navigator.clipboard.readText();
-    if (current === clip.value) await navigator.clipboard.writeText("");
-    cleared = true;
-  } catch (_) {
-    try {
-      await navigator.clipboard.writeText("");
-      cleared = true;
-    } catch (_) {
-      cleared = false;
-    }
-  }
-  if (cleared) {
-    clip.value = "";
-    clip.wallet = null;
-    clip.retry = false;
-    if (reason !== "pagehide") setStatus("Clipboard cleared.");
-  } else {
-    // Browsers refuse clipboard access while the page is not focused: retry on focus.
-    clip.retry = true;
-  }
-}
-
-async function copyField(field) {
-  const wallet = ui.selected;
-  const id = ui.current;
-  if (!wallet || !id) return;
-  try {
-    const result = await api("POST", walletPath(wallet, "/entries/" + id + "/field"), { field });
-    await clearClipboard("replace");
-    await navigator.clipboard.writeText(result.value);
-    clip.value = result.value;
-    clip.wallet = wallet;
-    result.value = "";
-    clip.deadline = Date.now() + clearSeconds() * 1000;
-    clip.timer = setTimeout(() => clearClipboard("timeout"), clearSeconds() * 1000);
-    clip.tick = setInterval(showCountdown, 1000);
-    showCountdown();
-    setStatus((field === "password" ? "Password" : "Username") + " copied.");
-  } catch (error) {
-    handleError(error);
-  }
-}
-
-function hideRevealed() {
-  clearTimeout(reveal.timer);
-  reveal.timer = null;
-  reveal.value = "";
-  $("revealed-password").textContent = "";
-  $("reveal-password").setAttribute("aria-pressed", "false");
-  $("reveal-password").textContent = "Reveal password";
-}
-
-async function toggleReveal() {
-  if (reveal.value !== "") {
-    hideRevealed();
+async function loadConflicts() {
+  const wallet = selectedWallet();
+  if (!wallet || !wallet.unlocked) {
+    closeConflicts();
     return;
   }
-  const wallet = ui.selected;
-  const id = ui.current;
-  try {
-    const result = await api("POST", walletPath(wallet, "/entries/" + id + "/field"), { field: "password" });
-    reveal.value = result.value;
-    result.value = "";
-    $("revealed-password").textContent = reveal.value;
-    $("reveal-password").setAttribute("aria-pressed", "true");
-    $("reveal-password").textContent = "Hide password";
-    reveal.timer = setTimeout(hideRevealed, clearSeconds() * 1000);
-  } catch (error) {
-    handleError(error);
+  const data = await api("GET", walletPath(wallet.name, "/conflicts"));
+  if (!selectedWallet() || selectedWallet().name !== wallet.name) return;
+  sync.conflicts = data.entries;
+  renderConflicts();
+}
+
+function renderConflicts() {
+  const key = JSON.stringify(sync.conflicts.map((c) => [c.id, c.title, c.versions]));
+  if (key === sync.conflictsKey) return;
+  sync.conflictsKey = key;
+  const list = $("conflict-list");
+  list.replaceChildren();
+  for (const c of sync.conflicts) {
+    const item = element("li");
+    item.append(
+      button(c.title, () => showConflict(c.id).catch(handleError), "link"),
+      element("span", c.versions + " versions", "badge warn"),
+    );
+    list.append(item);
+  }
+  $("conflicts-section").hidden = sync.conflicts.length === 0;
+  if (sync.conflicts.length === 0) {
+    $("conflict-view").hidden = true;
   }
 }
 
-$("create-wallet-form").addEventListener("submit", async (event) => {
-  event.preventDefault();
-  const name = $("create-name");
-  const password = $("create-password");
-  const confirm = $("create-password-confirm");
-  const body = { name: name.value, password: password.value, password_confirm: confirm.value };
-  password.value = "";
-  confirm.value = "";
-  try {
-    const created = await api("POST", "/api/wallets", body);
-    body.password = "";
-    body.password_confirm = "";
-    name.value = "";
-    ui.selected = created.name;
-    setStatus("Wallet " + created.name + " created.");
-    await refreshState();
-  } catch (error) {
-    body.password = "";
-    body.password_confirm = "";
-    report(error);
-  }
-});
-
-$("add-entry-form").addEventListener("submit", async (event) => {
-  event.preventDefault();
+async function showConflict(id) {
   const wallet = ui.selected;
-  const ids = ["entry-title", "entry-username", "entry-password", "entry-url", "entry-notes"];
-  const body = {
-    title: $("entry-title").value,
-    username: $("entry-username").value,
-    password: $("entry-password").value,
-    url: $("entry-url").value,
-    notes: $("entry-notes").value,
-  };
-  $("entry-password").value = "";
-  try {
-    await api("POST", walletPath(wallet, "/entries"), body);
-    body.password = "";
-    for (const id of ids) $(id).value = "";
-    setStatus("Credential added.");
-    await loadEntries();
-  } catch (error) {
-    body.password = "";
-    handleError(error);
+  const data = await api("GET", walletPath(wallet, "/conflicts/" + id));
+  sync.conflict = id;
+  const versions = $("conflict-versions");
+  versions.replaceChildren();
+  for (const v of data.versions) {
+    const item = element("li", undefined, "version");
+    const title = v.deleted ? "(deleted)" : v.title;
+    item.append(element("strong", title));
+    const facts = element("dl", undefined, "fields");
+    const fact = (label, value) => facts.append(element("dt", label), element("dd", value || "-"));
+    if (!v.deleted) {
+      fact("Username", v.username);
+      fact("URL", v.url);
+      fact("Notes", v.notes);
+    }
+    fact("Modified", new Date(v.modified_at * 1000).toLocaleString());
+    fact("Device", v.device);
+    item.append(facts);
+    const secret = element("code", "", "secret");
+    secret.setAttribute("aria-live", "polite");
+    const actions = element("div", undefined, "row");
+    actions.append(button("Keep this version", () => resolveConflict(id, v.index).catch(handleError)));
+    if (!v.deleted) {
+      actions.append(
+        button("Reveal password", async () => {
+          if (secret.textContent !== "") {
+            secret.textContent = "";
+            return;
+          }
+          const field = await api("POST", walletPath(wallet, "/conflicts/" + id + "/field"), {
+            index: v.index,
+            field: "password",
+          }).catch(handleError);
+          if (!field) return;
+          secret.textContent = field.value;
+          field.value = "";
+          clearTimeout(sync.revealTimer);
+          sync.revealTimer = setTimeout(() => {
+            secret.textContent = "";
+          }, clearSeconds() * 1000);
+        }, "secondary"),
+      );
+    }
+    item.append(actions, secret);
+    versions.append(item);
   }
-});
+  const bottom = $("conflict-actions");
+  bottom.replaceChildren(
+    button("Keep both", () => resolveConflict(id, "both").catch(handleError)),
+    button("Close", () => {
+      $("conflict-view").hidden = true;
+      $("conflict-versions").replaceChildren();
+    }, "secondary"),
+  );
+  $("conflict-title").textContent = "Versions of " + (data.versions[0].title || "a deleted credential");
+  $("conflict-view").hidden = false;
+  $("conflict-title").focus();
+}
 
-$("search-form").addEventListener("submit", (event) => {
-  event.preventDefault();
-  loadEntries().catch(handleError);
-});
-
-$("edit-entry-form").addEventListener("submit", async (event) => {
-  event.preventDefault();
+async function resolveConflict(id, keep) {
   const wallet = ui.selected;
-  const id = ui.current;
-  const body = {
-    title: $("edit-title").value,
-    username: $("edit-username").value,
-    password: $("edit-password").value,
-    url: $("edit-url").value,
-    notes: $("edit-notes").value,
-  };
-  // An empty password field keeps the stored password: the service merges it, so the
-  // password never has to come to the page for an edit (FR-024).
-  body.keep_password = body.password === "";
-  $("edit-password").value = "";
-  try {
-    await api("PUT", walletPath(wallet, "/entries/" + id), body);
-    body.password = "";
-    hideRevealed();
-    setStatus("Credential saved.");
-    await loadEntries();
-    await showEntry(id);
-  } catch (error) {
-    body.password = "";
-    handleError(error);
-  }
-});
+  const body = keep === "both" ? { keep: "both" } : { keep };
+  await api("POST", walletPath(wallet, "/conflicts/" + id + "/resolve"), body);
+  setStatus("Conflict resolved; the other devices take this choice on their next sync.");
+  $("conflict-view").hidden = true;
+  $("conflict-versions").replaceChildren();
+  await loadEntries();
+}
 
-$("delete-entry").addEventListener("click", async () => {
-  const wallet = ui.selected;
-  const id = ui.current;
-  const title = $("details-title").textContent;
-  if (!window.confirm("Delete the credential \"" + title + "\"? This cannot be undone.")) return;
-  try {
-    await api("DELETE", walletPath(wallet, "/entries/" + id));
-    closeDetails();
-    setStatus("Credential deleted.");
-    await loadEntries();
-  } catch (error) {
-    handleError(error);
-  }
-});
-
-$("lock-wallet").addEventListener("click", async () => {
-  const wallet = ui.selected;
-  onWalletLocked();
-  try {
-    await api("POST", walletPath(wallet, "/lock"));
-    setStatus("Wallet " + wallet + " locked.");
-    await refreshState();
-  } catch (error) {
-    handleError(error);
-  }
-});
-
-$("lock-all").addEventListener("click", async () => {
-  onWalletLocked();
-  try {
-    const result = await api("POST", "/api/lock-all");
-    setStatus(result.locked.length === 0 ? "No wallet was unlocked." : "All wallets locked.");
-    await refreshState();
-  } catch (error) {
-    handleError(error);
-  }
-});
-
-$("close-details").addEventListener("click", closeDetails);
-$("copy-password").addEventListener("click", () => copyField("password"));
-$("copy-username").addEventListener("click", () => copyField("username"));
-$("reveal-password").addEventListener("click", toggleReveal);
-
-window.addEventListener("pagehide", () => {
-  hideRevealed();
-  clearClipboard("pagehide");
-});
-document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "hidden") hideRevealed();
-});
-window.addEventListener("focus", () => {
-  if (clip.retry) clearClipboard("timeout");
-});
-
-$("unlock-form").addEventListener("submit", async (event) => {
-  event.preventDefault();
-  const wallet = ui.selected;
-  const input = $("unlock-password");
-  const body = { password: input.value };
-  input.value = "";
-  try {
-    await api("POST", walletPath(wallet, "/unlock"), body);
-    body.password = "";
-    setStatus("Wallet " + wallet + " unlocked.");
-    await refreshState();
-    await loadEntries();
-  } catch (error) {
-    body.password = "";
-    report(error);
-  }
-});
-
-// --- Devices (003). Read-only network status; settings change only in the config file. ---
-
-const NET_POLL_MS = 5000;
-const net = { data: null };
-
-const NET_STATES = {
-  off: "off",
-  identity_unusable: "unavailable: the device identity file is unusable",
-  peers_unusable: "unavailable: the paired devices file is unusable",
-  port_in_use: "unavailable: port in use",
-  no_local_network: "no local network",
-  on: "on",
+const SYNC_STATES = {
+  sync_off: "sync off (networking disabled)",
+  disabled: "disabled",
+  possible_rollback: "possible rollback",
+  conflicts: "conflicts",
+  changes_waiting: "changes waiting: unlock to merge",
+  syncing: "syncing",
+  sync_error: "sync error",
+  not_synced: "not synced",
+  in_sync: "in sync",
 };
+const SYNC_REASONS = {
+  corrupted_record: "the sync record is corrupted",
+  duplicate_wallet_id: "another wallet file has the same identity",
+  too_many_conflicts: "too many conflicts, resolve first",
+  no_peer: "no peer holds it",
+  unlock_once: "unlock once to enable sync",
+  format_v1: "format version 1",
+};
+const PENDING_STATUS = {
+  waiting: "changes waiting: unlock to merge",
+  cannot_open: "cannot open: different master password or corrupted",
+  password_conflict: "password changed on two devices",
+  too_many_conflicts: "too many conflicts, resolve first",
+};
+const POSITIONS = {
+  in_sync: "in sync",
+  behind: "behind",
+  ahead: "ahead",
+  diverged: "diverged",
+  unknown: "unknown",
+  offline: "offline",
+  older_state_offered: "older state offered",
+  error: "error",
+};
+const WARNING_KINDS = {
+  possible_rollback: "possible rollback: this wallet is older than one this device saved",
+  older_state_offered: "a device offered an older state than it sent before",
+  invalid_copy: "a device sent a copy that is not valid for this wallet",
+  cannot_open: "cannot open: different master password or corrupted",
+  self_rollback_recovered: "this device had lost changes; they were recovered from another device",
+  password_adopted: "the master password was changed on another device; use the new password next time",
+  record_corrupted: "the sync record is corrupted; reset sync state after unlocking",
+  duplicate_wallet_id: "another wallet file has the same identity; sync is disabled for both",
+};
+const syncData = { overview: null, detail: null, key: null };
 
-function renderNetwork() {
-  const data = net.data;
-  if (!data) return;
-  const device = data.this_device;
-  $("this-device-name").textContent = device ? device.name : "-";
-  $("this-device-fingerprint").textContent = device ? device.fingerprint : "-";
-  let state = NET_STATES[data.status.state] || data.status.state;
-  if (data.status.state === "port_in_use" && data.status.port) state += " " + data.status.port;
-  $("network-state").textContent = state;
-  const names = data.status.interfaces.map((i) => i.name + " " + i.addr + "/" + i.prefix);
-  $("network-interfaces").textContent = names.length ? names.join(", ") : "-";
-  const s = data.settings;
-  $("network-settings").textContent =
-    "network = " + s.network + ", peer_port = " + s.peer_port + ", discovery_port = " +
-    s.discovery_port + (s.interface ? ", network_interface = " + s.interface : "");
+function syncLabel(sync) {
+  if (!sync) return SYNC_STATES.sync_off;
+  let text = SYNC_STATES[sync.state] || sync.state;
+  if (sync.state === "conflicts") text += " (" + sync.conflicts + ")";
+  if (sync.reason) text += ": " + (SYNC_REASONS[sync.reason] || sync.reason);
+  return text;
 }
 
-async function netPoll() {
+function shortPeer(hex) {
+  const peer = syncData.overview && syncData.overview.peers.find((p) => p.device_id === hex);
+  return peer ? peer.name : "unknown device";
+}
+
+function renderSyncOverview() {
+  const data = syncData.overview;
+  if (!data) return;
+  $("sync-now-all").disabled = !data.enabled;
+  const devices = $("sync-device-list");
+  devices.replaceChildren();
+  for (const peer of data.peers) {
+    const item = element("li");
+    item.append(element("strong", peer.name));
+    if (peer.sync === "unsupported") {
+      item.append(element("span", "sync unsupported by peer", "badge warn"));
+    } else if (peer.last_round_at) {
+      item.append(element("span", "Last synced " + new Date(peer.last_round_at * 1000).toLocaleString() +
+        " (" + (peer.last_outcome || "unknown") + ")", "muted small"));
+    } else {
+      item.append(element("span", "not synced yet", "muted small"));
+    }
+    devices.append(item);
+  }
+  const warnings = $("sync-warnings");
+  warnings.replaceChildren();
+  for (const w of data.warnings) {
+    const item = element("li");
+    let text = w.wallet + ": " + (WARNING_KINDS[w.kind] || w.kind);
+    if (w.peer) text += " (" + shortPeer(w.peer) + ")";
+    item.append(element("span", text));
+    item.append(button("Dismiss", () => dismissWarning(w.id).catch(report), "secondary"));
+    warnings.append(item);
+  }
+  if (data.warnings.length === 0) warnings.append(element("li", "No sync warnings.", "muted"));
+}
+
+async function dismissWarning(id) {
+  await api("POST", "/api/sync/warnings/dismiss", { ids: [id] });
+  await syncPoll();
+}
+
+function passwordAction(label, onSubmit) {
+  const form = element("form", undefined, "row");
+  const id = "pending-password-" + Math.random().toString(36).slice(2);
+  const labelNode = element("label", label);
+  labelNode.htmlFor = id;
+  const input = element("input");
+  input.type = "password";
+  input.id = id;
+  input.autocomplete = "off";
+  form.append(labelNode, input);
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const password = input.value;
+    input.value = "";
+    onSubmit(password).catch(handleError);
+  });
+  return { form, input };
+}
+
+function renderPending(wallet, detail) {
+  const list = $("sync-pending-list");
+  list.replaceChildren();
+  for (const p of detail.pending) {
+    const item = element("li");
+    item.append(element("span", (PENDING_STATUS[p.status] || p.status) + " (from " + shortPeer(p.peer) + ")"));
+    const base = walletPath(wallet.name, "/sync/pending/" + p.peer);
+    if (wallet.unlocked && p.status === "cannot_open") {
+      const open = passwordAction("Master password of that copy", async (password) => {
+        await api("POST", base + "/open", { password });
+        setStatus("The copy was merged.");
+        await refreshAfterSync();
+      });
+      open.form.append(element("button", "Open copy"));
+      item.append(open.form);
+    }
+    if (wallet.unlocked && p.status === "password_conflict") {
+      const choose = passwordAction("Master password of that copy", async () => {});
+      const keep = (which) => async () => {
+        const password = choose.input.value;
+        choose.input.value = "";
+        await api("POST", base + "/choose-password", { keep: which, password });
+        setStatus("Password choice saved; the wallet was merged.");
+        await refreshAfterSync();
+      };
+      choose.form.append(
+        button("Keep this device's password", () => keep("local")().catch(handleError)),
+        button("Keep the other device's password", () => keep("copy")().catch(handleError), "secondary"),
+      );
+      item.append(choose.form);
+    }
+    item.append(button("Discard", async () => {
+      if (!window.confirm("Discard the copy received from " + shortPeer(p.peer) + "? Its changes are not merged.")) return;
+      await api("POST", base + "/discard").catch(handleError);
+      await syncPoll();
+    }, "danger"));
+    list.append(item);
+  }
+}
+
+function renderSyncDetail() {
+  const wallet = selectedWallet();
+  const detail = syncData.detail;
+  if (!wallet || !detail) return;
+  let text = syncLabel({ state: detail.state, reason: detail.reason, conflicts: wallet.sync ? wallet.sync.conflicts : 0 });
+  if (wallet.sync && wallet.sync.last_synced_at) {
+    text += " - Last synced " + new Date(wallet.sync.last_synced_at * 1000).toLocaleString();
+  }
+  $("wallet-sync-state").textContent = text;
+  $("sync-now-wallet").disabled = detail.state === "sync_off";
+  renderPending(wallet, detail);
+  const peers = $("sync-peer-list");
+  peers.replaceChildren();
+  for (const p of detail.peers) {
+    const item = element("li");
+    item.append(element("strong", p.name), element("span", POSITIONS[p.position] || p.position, "badge"));
+    if (p.last_round_at) item.append(element("span", "Last synced " + new Date(p.last_round_at * 1000).toLocaleString(), "muted small"));
+    peers.append(item);
+  }
+  const recovery = $("sync-recovery");
+  recovery.replaceChildren();
+  if (detail.state === "possible_rollback") {
+    recovery.append(button("Accept this older state", () => recover("/sync/accept-older",
+      "Accept this older state? Newer changes that were lost on this device will not come back unless another device still has them.").catch(handleError), "danger"));
+  }
+  if (detail.state === "disabled" && detail.reason === "corrupted_record") {
+    recovery.append(button("Reset sync state", () => recover("/sync/reset",
+      "Reset the sync state of this wallet? It is rebuilt from the wallet as it is now.").catch(handleError), "danger"));
+  }
+}
+
+async function recover(path, question) {
+  const wallet = selectedWallet();
+  if (!wallet) return;
+  if (!wallet.unlocked) {
+    setStatus("Unlock the wallet first.", true);
+    return;
+  }
+  if (!window.confirm(question)) return;
+  await api("POST", walletPath(wallet.name, path), { confirm: true });
+  setStatus(path === "/sync/reset" ? "Sync state reset." : "The older state was accepted.");
+  await syncPoll();
+}
+
+async function refreshAfterSync() {
+  await refreshState();
+  await loadEntries();
+  await syncPoll();
+}
+
+// Background, on the network poll's interval; skipped while the tab is hidden.
+async function syncPoll() {
+  if (document.visibilityState === "hidden") return;
   try {
-    net.data = await api("GET", "/api/network");
-    renderNetwork();
+    syncData.overview = await api("GET", "/api/sync");
+    renderSyncOverview();
+    const wallet = selectedWallet();
+    if (wallet) {
+      syncData.detail = await api("GET", walletPath(wallet.name, "/sync"));
+      renderSyncDetail();
+    }
   } catch (error) {
     if (error instanceof ApiError && error.status === 401) return;
   }
 }
 
-netPoll();
-setInterval(netPoll, NET_POLL_MS);
+async function syncNow(wallet) {
+  try {
+    await api("POST", "/api/sync/now", { wallet });
+    setStatus("Sync started with every connected device.");
+  } catch (error) {
+    report(error);
+  }
+}
 
-refreshState().catch(report);
-setInterval(poll, POLL_MS);
-setInterval(fastPoll, FAST_POLL_MS);
+$("sync-now-all").addEventListener("click", () => syncNow(null));
+$("sync-now-wallet").addEventListener("click", () => syncNow(ui.selected));
+syncPoll();
+setInterval(syncPoll, NET_POLL_MS);

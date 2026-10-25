@@ -17,6 +17,12 @@ serde = { version = "1", features = ["derive"] }
 postcard = { version = "1", features = ["alloc"] }
 unicode-normalization = "0.1"
 thiserror = "2"
+# 004: content hash of entry versions only (vetted RustCrypto, already in the tree).
+sha2 = { workspace = true }
+
+[dev-dependencies]
+sha2 = { workspace = true }
+vault-core = { path = ".", features = ["testkit"] }
 
 [[test]]
 name = "storage_memory"

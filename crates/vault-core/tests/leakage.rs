@@ -121,3 +121,51 @@ fn errors_never_show_secrets() {
         }
     }
 }
+
+// --- 004 T013: format v2 adds no plaintext metadata (research R2, SC-005) ---
+
+#[test]
+fn v2_file_carries_no_wallet_id_device_ids_or_counters_in_clear() {
+    let device_label = "DEVICE-ID-MARKER-0123456789abcdef";
+    let mut vault = Vault::create(
+        master(),
+        KdfConfig::MINIMUM,
+        DeviceId::new(device_label).unwrap(),
+        clock(),
+    )
+    .unwrap();
+    for _ in 0..3 {
+        vault.add_entry(marker_fields()).unwrap();
+    }
+    let sealed = vault.seal().unwrap();
+    let wallet_id = *vault.wallet_id().as_bytes();
+    assert!(
+        !sealed.windows(16).any(|w| w == wallet_id),
+        "wallet id in clear"
+    );
+    assert!(!contains(&sealed, device_label), "device id in clear");
+    assert!(!contains(&sealed, "laptop"));
+    // The header is the v1 layout byte for byte, only the version differs.
+    assert_eq!(&sealed[0..4], b"PWSV");
+    assert_eq!(&sealed[4..6], &2u16.to_le_bytes());
+    assert_eq!(sealed[6], 1);
+    // Nothing after the 63-byte header is readable: a second seal of the same content shares
+    // no ciphertext bytes window that would reveal counters.
+    let again = vault.seal().unwrap();
+    assert_ne!(sealed[63..], again[63..]);
+}
+
+#[test]
+fn vault_debug_shows_no_state_vector_or_secret() {
+    let mut vault = Vault::create(
+        master(),
+        KdfConfig::MINIMUM,
+        DeviceId::new("DEVICE-ID-MARKER").unwrap(),
+        clock(),
+    )
+    .unwrap();
+    vault.add_entry(marker_fields()).unwrap();
+    let text = format!("{vault:?} {:?}", vault.state());
+    assert_no_secret(&text, "Vault debug");
+    assert!(!text.contains("DEVICE-ID-MARKER"));
+}

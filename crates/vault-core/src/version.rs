@@ -25,6 +25,33 @@ impl VersionVector {
         Self(BTreeMap::from([(device.clone(), 1)]))
     }
 
+    /// No change by any device yet (used for the password-change epoch, which starts empty).
+    pub fn empty() -> Self {
+        Self(BTreeMap::new())
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Component-wise maximum.
+    pub fn join(&self, other: &Self) -> Self {
+        let mut map = self.0.clone();
+        for (device, counter) in &other.0 {
+            let slot = map.entry(device.clone()).or_insert(0);
+            *slot = (*slot).max(*counter);
+        }
+        Self(map)
+    }
+
+    /// `self >= other` in every component.
+    pub fn dominates(&self, other: &Self) -> bool {
+        other
+            .0
+            .iter()
+            .all(|(device, counter)| self.get(device) >= *counter)
+    }
+
     pub fn increment(&mut self, device: &DeviceId) {
         *self.0.entry(device.clone()).or_insert(0) += 1;
     }

@@ -1,8 +1,8 @@
 use std::time::Duration;
 
-use vault_core::{StorageError, VaultStorage};
+use vault_core::{StateVector, StorageError, VaultStorage, WalletId};
 
-use crate::WalletName;
+use crate::{CopyFacts, CopyVerdict, WalletName};
 
 /// Port to the place where wallets live, one encrypted blob per name.
 pub trait WalletDirectory: Send + Sync {
@@ -19,6 +19,64 @@ pub trait ElapsedClock: Send + Sync {
     fn monotonic(&self) -> Duration;
     /// Time since boot; keeps counting while suspended.
     fn boottime(&self) -> Duration;
+}
+
+/// A paired device holding a pending copy (the 003 device id; opaque here).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct PeerRef(pub [u8; 32]);
+
+/// A received copy waiting for an unlock (004, research R13).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PendingRef {
+    pub peer: PeerRef,
+    /// The state the peer claimed; the authenticated one must equal it.
+    pub claimed_state: StateVector,
+    pub size: u64,
+}
+
+/// What became of a pending copy.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PendingOutcome {
+    Merged {
+        conflicts: u32,
+        self_rollback: bool,
+        password_adopted: bool,
+    },
+    /// Nothing new in it.
+    Unchanged,
+    /// Another master password, or corrupted: stays pending (FR-008).
+    CannotOpen,
+    /// Concurrent password changes: stays pending until the person chooses (FR-022).
+    PasswordConflict,
+    /// Would exceed 16 versions per entry: stays pending (FR-031).
+    TooManyConflicts,
+    /// Failed the sync checks: deleted with a warning.
+    Invalid,
+}
+
+/// What an unlock tells the sync layer: the authenticated facts of the file just opened.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UnlockFacts {
+    pub wallet_id: WalletId,
+    pub state: StateVector,
+    /// Format version of the file (1 or 2).
+    pub format_version: u16,
+}
+
+/// Port to the received copies of a wallet (implemented by the host, 004
+/// contracts/vault-core-sync-api.md), plus the unlock notification that lets the host
+/// authenticate its sync record and decide the v1 -> v2 rewrite (research R3).
+pub trait PendingCopies: Send + Sync {
+    fn list(&self, wallet: &WalletName) -> Vec<PendingRef>;
+    fn load(&self, wallet: &WalletName, peer: &PeerRef) -> Result<Vec<u8>, StorageError>;
+    /// The sync checks (requested wallet id, claimed state, peer mark, jump bound).
+    fn check(&self, wallet: &WalletName, peer: &PeerRef, facts: &CopyFacts) -> CopyVerdict;
+    fn outcome(&self, wallet: &WalletName, peer: &PeerRef, outcome: PendingOutcome);
+    /// A wallet was unlocked from `file` (before pending copies are merged). Returns whether
+    /// a version 1 file should be rewritten as version 2 now.
+    fn unlocked(&self, wallet: &WalletName, file: &[u8], facts: &UnlockFacts) -> bool;
+    /// The version 1 file was rewritten as version 2.
+    fn upgraded(&self, wallet: &WalletName);
 }
 
 #[cfg(feature = "testkit")]

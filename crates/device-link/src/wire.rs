@@ -1,4 +1,5 @@
-//! LAN peer protocol v1 wire format (contracts/peer-protocol.md): frames, Hello, payloads.
+//! LAN peer protocol wire format (003 contracts/peer-protocol.md, extended by 004
+//! contracts/sync-protocol.md): frames, Hello, payloads.
 
 use crate::error::Error;
 use crate::name::DeviceName;
@@ -43,20 +44,51 @@ pub enum HelloKind {
 }
 
 pub fn hello(kind: HelloKind) -> [u8; HELLO_LEN] {
+    hello_versioned(kind, HelloVersion::V1)
+}
+
+/// 003 parser: version 1 only (a v1 device rejects version 2 before any crypto, 004 R7).
+pub fn parse_hello(body: &[u8]) -> Result<HelloKind, Error> {
+    match parse_hello_versioned(body)? {
+        (kind, HelloVersion::V1) => Ok(kind),
+        _ => Err(Error::Protocol),
+    }
+}
+
+/// Channel protocol version announced in the Hello (004, contracts/sync-protocol.md).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum HelloVersion {
+    /// 003: maintenance messages only.
+    V1,
+    /// 004: v1 plus the sync payload types 0x20 and 0x21.
+    V2,
+}
+
+/// `PWSC || version || kind`. Pairing exists only in version 1.
+pub fn hello_versioned(kind: HelloKind, version: HelloVersion) -> [u8; HELLO_LEN] {
     let k = match kind {
         HelloKind::Channel => 1,
         HelloKind::Pairing => 2,
     };
-    [b'P', b'W', b'S', b'C', 1, k]
+    let v = match version {
+        HelloVersion::V1 => 1,
+        HelloVersion::V2 => 2,
+    };
+    [b'P', b'W', b'S', b'C', v, k]
 }
 
-pub fn parse_hello(body: &[u8]) -> Result<HelloKind, Error> {
+/// Accepts channel Hello v1 and v2 and pairing Hello v1.
+pub fn parse_hello_versioned(body: &[u8]) -> Result<(HelloKind, HelloVersion), Error> {
     match body {
-        [b'P', b'W', b'S', b'C', 1, 1] => Ok(HelloKind::Channel),
-        [b'P', b'W', b'S', b'C', 1, 2] => Ok(HelloKind::Pairing),
+        [b'P', b'W', b'S', b'C', 1, 1] => Ok((HelloKind::Channel, HelloVersion::V1)),
+        [b'P', b'W', b'S', b'C', 1, 2] => Ok((HelloKind::Pairing, HelloVersion::V1)),
+        [b'P', b'W', b'S', b'C', 2, 1] => Ok((HelloKind::Channel, HelloVersion::V2)),
         _ => Err(Error::Protocol),
     }
 }
+
+/// Largest `SyncCtl` fragment or `CopyData` chunk (fits a 1024-byte frame with the AEAD tag).
+pub const MAX_SYNC_CHUNK: usize = 1000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RejectReason {
@@ -76,17 +108,42 @@ pub enum CloseReason {
 /// Messages carried inside Noise (never in clear).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Payload {
-    PairHello { name: DeviceName },
-    PairPending { seconds_left: u16 },
-    PairCommit { name: DeviceName },
-    PairReject { reason: RejectReason },
+    PairHello {
+        name: DeviceName,
+    },
+    PairPending {
+        seconds_left: u16,
+    },
+    PairCommit {
+        name: DeviceName,
+    },
+    PairReject {
+        reason: RejectReason,
+    },
     PairAck,
-    ChannelHello { name: DeviceName },
-    Welcome { name: DeviceName },
+    ChannelHello {
+        name: DeviceName,
+    },
+    Welcome {
+        name: DeviceName,
+    },
     Refused,
     Keepalive,
-    NameUpdate { name: DeviceName },
-    Close { reason: CloseReason },
+    NameUpdate {
+        name: DeviceName,
+    },
+    Close {
+        reason: CloseReason,
+    },
+    /// 004 (channel v2 only): one fragment of a sync control message.
+    SyncCtl {
+        more: bool,
+        fragment: Vec<u8>,
+    },
+    /// 004 (channel v2 only): a chunk of the sender's current wallet-copy transfer.
+    CopyData {
+        bytes: Vec<u8>,
+    },
 }
 
 fn push_name(out: &mut Vec<u8>, name: &DeviceName) {
@@ -130,8 +187,36 @@ impl Payload {
                 push_name(&mut out, name);
             }
             Self::Close { reason } => out.extend_from_slice(&[0x15, *reason as u8]),
+            Self::SyncCtl { more, fragment } => {
+                out.reserve(fragment.len() + 2);
+                out.push(0x20);
+                out.push(u8::from(*more));
+                out.extend_from_slice(fragment);
+            }
+            Self::CopyData { bytes } => {
+                out.reserve(bytes.len() + 1);
+                out.push(0x21);
+                out.extend_from_slice(bytes);
+            }
         }
         out
+    }
+
+    /// Channel v2 decoding: the 003 set plus `SyncCtl` and `CopyData` (1..=1000 bytes).
+    pub fn decode_v2(bytes: &[u8]) -> Result<Self, Error> {
+        let chunk_ok = |chunk: &[u8]| (1..=MAX_SYNC_CHUNK).contains(&chunk.len());
+        match bytes {
+            [0x20, more @ (0 | 1), fragment @ ..] if chunk_ok(fragment) => Ok(Self::SyncCtl {
+                more: *more == 1,
+                fragment: fragment.to_vec(),
+            }),
+            [0x20, ..] => Err(Error::Protocol),
+            [0x21, data @ ..] if chunk_ok(data) => Ok(Self::CopyData {
+                bytes: data.to_vec(),
+            }),
+            [0x21, ..] => Err(Error::Protocol),
+            _ => Self::decode(bytes),
+        }
     }
 
     pub fn decode(bytes: &[u8]) -> Result<Self, Error> {

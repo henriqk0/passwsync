@@ -18,3 +18,5 @@ pub mod peer;
 pub mod qr;
 pub mod signals;
 pub mod sweeper;
+pub mod sync_runtime;
+pub mod sync_store;
