@@ -242,4 +242,78 @@ mod saved {
         let _ = vault.delete_entry_saved(id, &mut storage);
         assert_eq!(snapshot(&vault), before);
     }
+
+    // --- 004 T015: saved mutations bump the state and roll it back on failure ---
+
+    #[test]
+    fn saved_mutations_bump_the_state_once_each() {
+        let (mut vault, _, mut storage, id) = with_one_entry();
+        storage.set_failing(false);
+        let me = DeviceId::new("laptop").unwrap();
+        assert_eq!(vault.state().get(&me), 1);
+        vault
+            .update_entry_saved(id, fields("Changed", "pw2"), &mut storage)
+            .unwrap();
+        assert_eq!(vault.state().get(&me), 2);
+        vault.delete_entry_saved(id, &mut storage).unwrap();
+        assert_eq!(vault.state().get(&me), 3);
+        assert_eq!(reopen(&storage).state(), vault.state());
+    }
+
+    #[test]
+    fn failed_saves_restore_the_state() {
+        let (mut vault, _, mut storage, id) = with_one_entry();
+        let before = vault.state().clone();
+        assert!(
+            vault
+                .add_entry_saved(fields("x", "p"), &mut storage)
+                .is_err()
+        );
+        assert!(
+            vault
+                .update_entry_saved(id, fields("y", "p"), &mut storage)
+                .is_err()
+        );
+        assert!(vault.delete_entry_saved(id, &mut storage).is_err());
+        assert_eq!(vault.state(), &before);
+    }
+
+    // --- 004 T026: a saved merge rolls back on storage failure ---
+
+    #[test]
+    fn failed_save_of_a_merge_leaves_the_vault_exactly_as_before() {
+        let (mut vault, time, mut storage, id) = with_one_entry();
+        storage.set_failing(false);
+        let mut other = vault_core::testkit::fork(&vault, "phone", 5_000);
+        other.update_entry(id, fields("From phone", "pw9")).unwrap();
+        other.add_entry(fields("New on phone", "p")).unwrap();
+        time.advance(1);
+        storage.set_failing(true);
+        let before = snapshot(&vault);
+        let state = vault.state().clone();
+        let saved = storage.load().unwrap();
+        let result = vault.merge_saved(vault_core::testkit::copy_of(&other), &mut storage);
+        assert!(matches!(result, Err(vault_core::MergeError::Save(_))));
+        assert_eq!(snapshot(&vault), before);
+        assert_eq!(vault.state(), &state);
+        assert_eq!(storage.load().unwrap(), saved);
+        // Once storage works the same merge applies and is saved.
+        storage.set_failing(false);
+        let report = vault
+            .merge_saved(vault_core::testkit::copy_of(&other), &mut storage)
+            .unwrap();
+        assert!(report.changed);
+        assert_eq!(reopen(&storage).state(), vault.state());
+        assert_eq!(vault.get(id).unwrap().fields().unwrap().title, "From phone");
+    }
+
+    #[test]
+    fn a_merged_copy_is_consumed() {
+        // The copy is moved into the merge and dropped (zeroized) whatever the outcome.
+        let (mut vault, _, mut storage, _) = with_one_entry();
+        storage.set_failing(false);
+        let copy = vault_core::testkit::copy_of(&vault);
+        let report = vault.merge_saved(copy, &mut storage).unwrap();
+        assert!(!report.changed);
+    }
 }

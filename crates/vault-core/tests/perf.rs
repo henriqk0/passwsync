@@ -100,3 +100,31 @@ fn ten_thousand_unlocked_entries_peak_under_64_mb() {
     assert!(peak < 64 * 1024, "peak grew by {peak} KiB");
     std::hint::black_box(&vault);
 }
+
+/// 004 T028 (Constitution V, SC-008): merging a 10 000-entry copy that differs by one entry
+/// stays fast and its extra peak memory stays bounded (the copy is held decrypted only while
+/// it is merged). Release mode: `cargo test --release -p vault-core -- --ignored`.
+#[test]
+#[ignore = "release-mode performance and memory check (Linux)"]
+fn merging_a_10000_entry_copy_differing_by_one_entry_is_bounded() {
+    use vault_core::testkit::{copy_of, fork};
+    let mut base = create(KdfConfig::MINIMUM);
+    add_typical_entries(&mut base, 10_000);
+    let mut other = fork(&base, "phone", 2);
+    let id = base.list()[0].id();
+    let mut fields = EntryFields::default();
+    fields.title = "changed on the phone".into();
+    other.update_entry(id, fields).unwrap();
+    let copy = copy_of(&other);
+    drop(other);
+    reset_peak_rss();
+    let baseline = status_kib("VmRSS:");
+    let started = Instant::now();
+    let report = base.merge(copy).unwrap();
+    let elapsed = started.elapsed();
+    let peak = status_kib("VmHWM:").saturating_sub(baseline);
+    assert!(report.changed);
+    eprintln!("merge of 10 000 entries: {elapsed:?}, peak +{peak} KiB");
+    assert!(elapsed < Duration::from_secs(2), "merge took {elapsed:?}");
+    assert!(peak < 64 * 1024, "peak grew by {peak} KiB");
+}

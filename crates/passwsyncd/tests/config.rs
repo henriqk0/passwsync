@@ -247,3 +247,48 @@ fn bad_network_config_exits_with_code_two() {
     let error = passwsyncd::app::StartError::Config(parse("network = maybe").unwrap_err());
     assert_eq!(error.exit_code(), 2);
 }
+
+// --- 004 T042: `sync_interval_minutes` (contracts/host-runtime-sync.md "Configuration") ---
+
+#[test]
+fn sync_interval_defaults_to_one_hour() {
+    assert_eq!(parse("").unwrap().sync_interval, Duration::from_secs(3600));
+}
+
+#[test]
+fn sync_interval_accepts_15_to_1440_minutes() {
+    assert_eq!(
+        parse("sync_interval_minutes = 15").unwrap().sync_interval,
+        Duration::from_secs(15 * 60)
+    );
+    assert_eq!(
+        parse("sync_interval_minutes = 1440").unwrap().sync_interval,
+        Duration::from_secs(1440 * 60)
+    );
+    for bad in ["14", "1441", "0", "99999999999999999999"] {
+        assert_eq!(
+            err(&format!("sync_interval_minutes = {bad}")),
+            "config: sync_interval_minutes: must be 15..=1440",
+            "{bad}"
+        );
+    }
+    assert_eq!(
+        err("sync_interval_minutes = \"60\""),
+        "config: sync_interval_minutes: not a decimal integer"
+    );
+    assert_eq!(
+        err("sync_interval_minutes = -5"),
+        "config: sync_interval_minutes: not a decimal integer"
+    );
+    assert_eq!(
+        err("sync_interval_minutes = 60\nsync_interval_minutes = 61"),
+        "config: sync_interval_minutes: duplicate key"
+    );
+}
+
+#[test]
+fn a_bad_sync_interval_exits_with_code_two() {
+    let error =
+        passwsyncd::app::StartError::Config(parse("sync_interval_minutes = 5").unwrap_err());
+    assert_eq!(error.exit_code(), 2);
+}

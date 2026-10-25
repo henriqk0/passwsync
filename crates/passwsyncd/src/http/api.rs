@@ -85,6 +85,9 @@ struct SettingsView {
 struct WalletView<'a> {
     name: &'a str,
     unlocked: bool,
+    /// 004: present only while sync runs (networking on); absent means "sync off".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sync: Option<super::api_sync::WalletSyncView>,
 }
 
 #[derive(Serialize)]
@@ -105,6 +108,9 @@ struct SummaryView<'a> {
     title: &'a str,
     username: &'a str,
     url: &'a str,
+    /// 004: present (true) only for conflicted credentials, so 002 clients see the 002 shape.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    conflicted: bool,
 }
 
 #[derive(Serialize)]
@@ -133,7 +139,7 @@ struct LockedView<'a> {
 
 /// JSON escaping can grow text up to 6x (`\uXXXX`); sizing for that means serde never
 /// reallocates a buffer holding credential data.
-fn capacity_for(texts: &[&str]) -> usize {
+pub(crate) fn capacity_for(texts: &[&str]) -> usize {
     texts.iter().map(|t| t.len() * 6 + 16).sum::<usize>() + 256
 }
 
@@ -148,16 +154,23 @@ fn status_of(error: ServiceError) -> u16 {
         | ServiceError::PasswordTooShort
         | ServiceError::PasswordMismatch
         | ServiceError::EmptyTitle
-        | ServiceError::FieldTooLarge => 400,
+        | ServiceError::FieldTooLarge
+        | ServiceError::InvalidVersionIndex => 400,
         ServiceError::WalletNotFound | ServiceError::EntryNotFound => 404,
-        ServiceError::WalletExists => 409,
+        ServiceError::WalletExists
+        | ServiceError::EntryConflicted
+        | ServiceError::TooManyConflicts
+        | ServiceError::PasswordConflict
+        | ServiceError::NotConflicted => 409,
         ServiceError::WalletLocked => 423,
         ServiceError::InvalidPasswordOrCorrupted
         | ServiceError::MalformedFile
         | ServiceError::UnsupportedVersion
         | ServiceError::UnsupportedKdf
         | ServiceError::KdfParamsOutOfRange
-        | ServiceError::WalletTooLarge => 422,
+        | ServiceError::WalletTooLarge
+        | ServiceError::CannotOpenCopy
+        | ServiceError::CopyRejected => 422,
         ServiceError::Storage | ServiceError::Internal => 500,
     }
 }
@@ -182,7 +195,7 @@ pub fn error(error: ServiceError) -> Response {
     Response::owned(status_of(error), JSON, body)
 }
 
-fn bad_request() -> Response {
+pub(crate) fn bad_request() -> Response {
     let view = ErrorView {
         error: "bad_request",
         message: "malformed request body",
@@ -192,7 +205,7 @@ fn bad_request() -> Response {
     Response::owned(400, JSON, body)
 }
 
-fn parse<'de, T: Deserialize<'de>>(body: &'de [u8]) -> Result<T, Response> {
+pub(crate) fn parse<'de, T: Deserialize<'de>>(body: &'de [u8]) -> Result<T, Response> {
     serde_json::from_slice(body).map_err(|_| bad_request())
 }
 
@@ -240,6 +253,9 @@ fn route(path: &str) -> Option<Route<'_>> {
 /// Dispatches an admitted `/api/*` request.
 pub fn handle(state: &AppState, req: &Request, path: &str) -> Response {
     if let Some(response) = super::api_network::handle(state, req, path) {
+        return response;
+    }
+    if let Some(response) = super::api_sync::handle(state, req, path) {
         return response;
     }
     let Some(route) = route(path) else {
@@ -321,10 +337,14 @@ fn get_state(state: &AppState) -> Response {
             .map(|w| WalletView {
                 name: w.name.as_str(),
                 unlocked: w.unlocked,
+                sync: state
+                    .sync
+                    .active()
+                    .then(|| super::api_sync::wallet_sync_view(state, &w.name)),
             })
             .collect(),
     };
-    json(200, &view, 128 + wallets.len() * 96)
+    json(200, &view, 128 + wallets.len() * 192)
 }
 
 fn create_wallet(state: &AppState, body: &[u8]) -> Response {
@@ -343,6 +363,7 @@ fn create_wallet(state: &AppState, body: &[u8]) -> Response {
                 &WalletView {
                     name: name.as_str(),
                     unlocked: true,
+                    sync: None,
                 },
                 128,
             )
@@ -366,6 +387,7 @@ fn unlock(state: &AppState, name: &WalletName, body: &[u8]) -> Response {
                 &WalletView {
                     name: name.as_str(),
                     unlocked: true,
+                    sync: None,
                 },
                 128,
             )
@@ -410,6 +432,7 @@ fn search(state: &AppState, name: &WalletName, body: &[u8]) -> Response {
                 title: &e.title,
                 username: &e.username,
                 url: &e.url,
+                conflicted: e.conflicted,
             })
             .collect(),
     };

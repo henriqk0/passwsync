@@ -76,10 +76,11 @@ fn bad_magic_is_malformed() {
 #[test]
 fn unknown_version_and_kdf_are_reported_distinctly() {
     let bytes = sealed_wallet();
-    let version = mutated(&bytes, |b| b[4..6].copy_from_slice(&2u16.to_le_bytes()));
+    // 004: version 2 is now the written format, so the first unknown version is 3.
+    let version = mutated(&bytes, |b| b[4..6].copy_from_slice(&3u16.to_le_bytes()));
     assert!(matches!(
         unlock(&version),
-        Err(VaultError::UnsupportedVersion(2))
+        Err(VaultError::UnsupportedVersion(3))
     ));
     let kdf = mutated(&bytes, |b| b[6] = 2);
     assert!(matches!(unlock(&kdf), Err(VaultError::UnsupportedKdf)));

@@ -93,7 +93,38 @@ pub enum NetEvent {
     PeerRefused(DeviceId, Refusal),
     RefusedByPeer(DeviceId),
     InterfacesChanged(Vec<InterfaceName>),
+    /// 004: the peer closed a channel v2 dial before Noise message 2; it is dialed with v1
+    /// (no sync) and retried with v2 after 24 hours or a restart.
+    PeerLegacy(DeviceId),
 }
+
+/// 004: receives the sync side of channel v2 (contracts/vault-core-sync-api.md). Called on
+/// network threads; implementations must return quickly.
+pub trait SyncFrameSink: Send + Sync {
+    /// A sync-enabled channel is up. `session` is the Noise handshake hash; `dialer` tells
+    /// whether this device opened the connection.
+    fn channel_up(&self, peer: DeviceId, conn: u64, session: [u8; 32], dialer: bool);
+    /// A `SyncCtl` or `CopyData` payload arrived on that channel.
+    fn frame(&self, peer: DeviceId, conn: u64, payload: Payload);
+    /// The channel closed.
+    fn channel_down(&self, peer: DeviceId, conn: u64);
+}
+
+/// Why [`Node::send_sync`] did not send.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SendError {
+    /// No channel to that peer with that connection number.
+    NotConnected,
+    /// The channel was negotiated with Hello v1.
+    NotSyncEnabled,
+    /// Not a `SyncCtl`/`CopyData` payload, or out of bounds.
+    Protocol,
+    /// The write failed; the channel is being closed.
+    Io,
+}
+
+/// A v1-only peer is retried with channel v2 after this long (004 R7).
+pub const LEGACY_RETRY: Duration = Duration::from_secs(24 * 3600);
 
 pub trait EventSink: Send + Sync {
     fn emit(&self, event: NetEvent);
@@ -235,6 +266,10 @@ pub(crate) struct ChannelEntry {
     pub dialer: DeviceId,
     pub stream: TcpStream,
     pub channel: Arc<Mutex<Channel>>,
+    /// Monotonic time of the last frame written (keepalive clock, shared with `send_sync`).
+    pub last_sent: Arc<Mutex<Duration>>,
+    /// 004: channel v2 (sync frames allowed).
+    pub sync: bool,
 }
 
 impl ChannelEntry {
@@ -262,6 +297,8 @@ pub(crate) struct State {
     pub slot: PairingSlot,
     pub rate: CodeRateLimiter,
     pub next_generation: u64,
+    /// 004: v1-only peers and when to try channel v2 again.
+    pub legacy: HashMap<DeviceId, Duration>,
 }
 
 pub(crate) struct Shared {
@@ -285,6 +322,8 @@ pub(crate) struct Shared {
     pub stop: AtomicBool,
     pub state: Mutex<State>,
     pub threads: Mutex<Vec<JoinHandle<()>>>,
+    /// 004: where sync frames go (none until the host sets one).
+    pub sync_sink: Mutex<Option<Arc<dyn SyncFrameSink>>>,
 }
 
 impl Shared {
@@ -294,6 +333,13 @@ impl Shared {
 
     pub fn stopping(&self) -> bool {
         self.stop.load(Ordering::SeqCst)
+    }
+
+    pub fn sync_sink(&self) -> Option<Arc<dyn SyncFrameSink>> {
+        self.sync_sink
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 
     /// Spawns a tracked network thread; finished ones are reaped on the way.
@@ -408,8 +454,10 @@ impl Node {
                 slot: PairingSlot::default(),
                 rate: CodeRateLimiter::default(),
                 next_generation: 1,
+                legacy: HashMap::new(),
             }),
             threads: Mutex::new(Vec::new()),
+            sync_sink: Mutex::new(None),
         });
         let accept_shared = Arc::clone(&shared);
         let listener = thread::Builder::new()
@@ -593,6 +641,98 @@ impl Node {
 
     pub fn clear_warnings(&self) {
         self.shared.lock().link.clear_warnings();
+    }
+
+    /// 004: routes sync frames of channel v2 to `sink`; channels already up are reported
+    /// with `channel_up` at once.
+    pub fn set_sync_sink(&self, sink: Arc<dyn SyncFrameSink>) {
+        *self
+            .shared
+            .sync_sink
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(Arc::clone(&sink));
+        let up: Vec<(DeviceId, u64, [u8; 32], bool)> = {
+            let state = self.shared.lock();
+            state
+                .channels
+                .iter()
+                .filter(|(_, e)| e.sync)
+                .filter_map(|(id, e)| {
+                    let channel = e.channel.lock().ok()?;
+                    Some((*id, e.conn, channel.session_hash(), channel.is_dialer()))
+                })
+                .collect()
+        };
+        for (peer, conn, session, dialer) in up {
+            sink.channel_up(peer, conn, session, dialer);
+        }
+    }
+
+    /// 004: seals and writes one sync payload on the channel `conn` to `peer`. The channel
+    /// mutex is held across seal and write, so nonce order equals write order; the write
+    /// counts for the keepalive clock.
+    pub fn send_sync(
+        &self,
+        peer: &DeviceId,
+        conn: u64,
+        payload: &Payload,
+    ) -> Result<(), SendError> {
+        let (stream, channel, last_sent, sync) = {
+            let state = self.shared.lock();
+            let entry = state
+                .channels
+                .get(peer)
+                .filter(|e| e.conn == conn)
+                .ok_or(SendError::NotConnected)?;
+            let stream = entry.stream.try_clone().map_err(|_| SendError::Io)?;
+            (
+                stream,
+                Arc::clone(&entry.channel),
+                Arc::clone(&entry.last_sent),
+                entry.sync,
+            )
+        };
+        if !sync {
+            return Err(SendError::NotSyncEnabled);
+        }
+        let mut guard = channel.lock().map_err(|_| SendError::Io)?;
+        let frame = guard.seal_sync(payload).map_err(|_| SendError::Protocol)?;
+        if framed::write_frame(&stream, &frame).is_err() {
+            drop(guard);
+            let _ = stream.shutdown(Shutdown::Both);
+            return Err(SendError::Io);
+        }
+        *last_sent.lock().unwrap_or_else(PoisonError::into_inner) = self.shared.mono.now();
+        Ok(())
+    }
+
+    /// 004: closes the channel `conn` to `peer` (a sync protocol error).
+    pub fn close_channel(&self, peer: &DeviceId, conn: u64) {
+        let state = self.shared.lock();
+        if let Some(entry) = state.channels.get(peer).filter(|e| e.conn == conn) {
+            let _ = entry.stream.shutdown(Shutdown::Both);
+        }
+    }
+
+    /// 004: whether `peer` is currently treated as v1-only.
+    pub fn is_legacy(&self, peer: &DeviceId) -> bool {
+        let now = self.shared.mono.now();
+        self.shared
+            .lock()
+            .legacy
+            .get(peer)
+            .is_some_and(|until| now < *until)
+    }
+
+    /// 004: open sync-enabled channels as `(peer, conn)`.
+    pub fn sync_channels(&self) -> Vec<(DeviceId, u64)> {
+        self.shared
+            .lock()
+            .channels
+            .iter()
+            .filter(|(_, e)| e.sync)
+            .map(|(id, e)| (*id, e.conn))
+            .collect()
     }
 
     /// Starts joining the device at `addr` with the typed code (FR-019).

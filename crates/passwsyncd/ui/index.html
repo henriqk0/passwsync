@@ -12,6 +12,7 @@
 <body>
 <header class="bar">
   <h1>passwsync</h1>
+  <button id="sync-now-all" type="button" class="secondary">Sync now</button>
   <button id="lock-all" type="button" class="secondary">Lock all wallets</button>
 </header>
 <p id="status" class="status" role="status" aria-live="polite"></p>
@@ -35,6 +36,16 @@
       <h2 id="wallet-title"></h2>
       <button id="lock-wallet" type="button" class="secondary">Lock</button>
     </div>
+    <section id="sync-details" class="details" aria-labelledby="sync-details-heading">
+      <h3 id="sync-details-heading">Sync</h3>
+      <p id="wallet-sync-state" class="muted" role="status" aria-live="polite"></p>
+      <div class="row">
+        <button id="sync-now-wallet" type="button" class="secondary">Sync now</button>
+      </div>
+      <ul id="sync-pending-list" class="entry-list" aria-label="Changes waiting"></ul>
+      <ul id="sync-peer-list" class="entry-list" aria-label="Devices holding this wallet"></ul>
+      <div id="sync-recovery" class="row"></div>
+    </section>
     <form id="unlock-form" class="stack" autocomplete="off">
       <h3>Unlock</h3>
       <label for="unlock-password">Master password</label>
@@ -48,6 +59,16 @@
       <button type="submit">Search</button>
     </form>
     <ul id="entry-list" class="entry-list" aria-label="Credentials"></ul>
+    <section id="conflicts-section" class="details" aria-labelledby="conflicts-heading" hidden>
+      <h3 id="conflicts-heading">Conflicts</h3>
+      <p class="muted small">These credentials were changed on two devices. Every version is kept until you choose.</p>
+      <ul id="conflict-list" class="entry-list" aria-label="Conflicted credentials"></ul>
+      <section id="conflict-view" aria-labelledby="conflict-title" hidden>
+        <h4 id="conflict-title" tabindex="-1"></h4>
+        <ol id="conflict-versions" class="versions"></ol>
+        <div id="conflict-actions" class="row"></div>
+      </section>
+    </section>
     <section id="entry-details" class="details" aria-labelledby="details-title" hidden>
       <h3 id="details-title" tabindex="-1"></h3>
       <dl class="fields">
@@ -150,11 +171,17 @@
     <section aria-labelledby="paired-heading">
       <h3 id="paired-heading">Paired devices</h3>
       <ul id="paired-list" class="paired-list"></ul>
+      <h4>Last sync with each device</h4>
+      <ul id="sync-device-list" class="paired-list"></ul>
     </section>
     <section aria-labelledby="warnings-heading">
       <h3 id="warnings-heading">Warnings</h3>
       <ul id="warnings-list" class="warnings-list"></ul>
       <button id="warnings-clear" type="button" class="secondary">Clear warnings</button>
+    </section>
+    <section aria-labelledby="sync-warnings-heading">
+      <h3 id="sync-warnings-heading">Sync warnings</h3>
+      <ul id="sync-warnings" class="warnings-list"></ul>
     </section>
   </section>
 </main>

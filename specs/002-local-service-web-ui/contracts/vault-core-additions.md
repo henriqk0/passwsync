@@ -45,3 +45,18 @@ Behavioral rules:
 - Contract tests: a failing `VaultStorage` fake (`testkit::FailingStorage`) proves the vault
   compares equal (via `all_records`) before and after a failed mutation for each of the three
   operations.
+
+## Additions from feature 004 (wallet sync)
+
+- `merge_saved`, `merge_choosing_password_saved`, `resolve_saved` and
+  `change_master_password_saved` follow the same save-or-rollback rule: on a save failure the
+  vault is exactly as before.
+- `wallet-service` adds `merge_copy`, `sync_facts`, `conflict_count`, `conflicts`,
+  `conflict_versions`, `conflict_field`, `resolve_conflict`, `change_password`,
+  `open_pending_with_password`, `choose_password`, the `PendingCopies` port
+  (`list`, `load`, `check`, `outcome`, `unlocked`, `upgraded`) with `Service::set_pending_copies`;
+  `unlock` merges pending copies before returning (one save). `EntrySummary` gains
+  `conflicted`. New `ServiceError` codes: `entry_conflicted`, `cannot_open_copy`,
+  `invalid_copy`, `too_many_conflicts`, `password_conflict`, `not_conflicted`,
+  `invalid_version`. Merges and copy key derivations are serialized with the KDF gate and
+  never touch the idle timer.

@@ -439,15 +439,18 @@ dependencies = [
  "device-link",
  "device-link-net",
  "httparse",
+ "postcard",
  "qrcodegen",
  "rand_core",
  "rustix",
  "serde",
  "serde_json",
+ "sha2",
  "signal-hook",
  "vault-core",
  "vault-storage-file",
  "wallet-service",
+ "wallet-sync",
  "zeroize",
 ]
 
@@ -769,8 +772,10 @@ dependencies = [
  "postcard",
  "rand_core",
  "serde",
+ "sha2",
  "thiserror",
  "unicode-normalization",
+ "vault-core",
  "zeroize",
 ]
 
@@ -795,6 +800,18 @@ dependencies = [
  "subtle",
  "vault-core",
  "wallet-service",
+ "zeroize",
+]
+
+[[package]]
+name = "wallet-sync"
+version = "0.1.0"
+dependencies = [
+ "hmac",
+ "rand_core",
+ "sha2",
+ "vault-core",
+ "wallet-sync",
  "zeroize",
 ]
 

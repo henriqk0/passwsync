@@ -329,3 +329,18 @@ fn pair_channel_and_revoke_leak_nothing() {
     let log = a.log_text();
     assert!(log.contains("pairing succeeded") && log.contains("device revoked"));
 }
+
+// --- 004 T133: the sync modules print nothing and use no unsafe code ---
+
+#[test]
+fn sync_modules_print_nothing_and_have_no_unsafe_code() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    for file in ["sync_runtime.rs", "sync_store.rs", "http/api_sync.rs"] {
+        let text = fs::read_to_string(root.join(file)).unwrap();
+        for needle in ["unsafe ", "println!", "eprintln!", "dbg!", "print!("] {
+            assert!(!text.contains(needle), "{needle} in {file}");
+        }
+        // Logging goes only through the closed `LogEvent` set.
+        assert!(!text.contains("log.fatal("), "{file}");
+    }
+}

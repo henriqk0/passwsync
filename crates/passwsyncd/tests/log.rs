@@ -276,3 +276,223 @@ mod network {
         assert!(InterfaceName::parse("x\n").is_err());
     }
 }
+
+// --- 004 T046: closed sync log events (contracts/host-runtime-sync.md "Log events") ---
+
+mod sync_events {
+    use device_link::identity::DeviceKey;
+    use passwsyncd::log::{LogEvent, SyncRoundClass};
+    use wallet_service::WalletName;
+
+    #[test]
+    fn every_sync_event_renders_the_contract_text() {
+        let wallet = WalletName::parse("Personal").unwrap();
+        let fp = DeviceKey::from_private([3; 32]).id().fingerprint();
+        let f = fp.to_string();
+        let cases: Vec<(LogEvent<'_>, String)> = vec![
+            (
+                LogEvent::SyncRoundStart { fingerprint: &fp },
+                format!("sync round start {f}"),
+            ),
+            (
+                LogEvent::SyncMerged {
+                    wallet: &wallet,
+                    fingerprint: &fp,
+                    conflicts: 2,
+                },
+                format!("sync merged wallet=Personal peer={f} conflicts=2"),
+            ),
+            (
+                LogEvent::SyncPendingStored {
+                    wallet: &wallet,
+                    fingerprint: &fp,
+                },
+                format!("sync pending stored wallet=Personal peer={f}"),
+            ),
+            (
+                LogEvent::SyncPossibleRollback { wallet: &wallet },
+                "sync possible rollback wallet=Personal".to_string(),
+            ),
+            (
+                LogEvent::SyncOlderStateOffered {
+                    wallet: &wallet,
+                    fingerprint: &fp,
+                },
+                format!("sync older state offered wallet=Personal peer={f}"),
+            ),
+            (
+                LogEvent::SyncInvalidCopy {
+                    wallet: &wallet,
+                    fingerprint: &fp,
+                },
+                format!("sync invalid copy wallet=Personal peer={f}"),
+            ),
+            (
+                LogEvent::SyncCannotOpenCopy {
+                    wallet: &wallet,
+                    fingerprint: &fp,
+                },
+                format!("sync cannot open copy wallet=Personal peer={f}"),
+            ),
+            (
+                LogEvent::SyncSelfRollbackRecovered {
+                    wallet: &wallet,
+                    fingerprint: &fp,
+                },
+                format!("sync self rollback recovered wallet=Personal peer={f}"),
+            ),
+            (
+                LogEvent::SyncAcceptedOlderState { wallet: &wallet },
+                "sync accepted older state wallet=Personal".to_string(),
+            ),
+            (
+                LogEvent::SyncStateReset { wallet: &wallet },
+                "sync state reset wallet=Personal".to_string(),
+            ),
+            (
+                LogEvent::SyncRecordCorrupted { wallet: &wallet },
+                "sync record corrupted wallet=Personal".to_string(),
+            ),
+            (
+                LogEvent::WalletUpgraded { wallet: &wallet },
+                "wallet upgraded to format 2 wallet=Personal".to_string(),
+            ),
+            (
+                LogEvent::SyncPeerLegacy { fingerprint: &fp },
+                format!("sync peer legacy {f}"),
+            ),
+        ];
+        for (event, expected) in cases {
+            assert_eq!(event.to_string(), expected);
+        }
+        for (class, word) in [
+            (SyncRoundClass::Ok, "ok"),
+            (SyncRoundClass::Failed, "failed"),
+            (SyncRoundClass::Busy, "busy"),
+            (SyncRoundClass::Timeout, "timeout"),
+            (SyncRoundClass::Protocol, "protocol"),
+        ] {
+            assert_eq!(
+                LogEvent::SyncRoundEnd {
+                    fingerprint: &fp,
+                    class,
+                    sent: 600,
+                    received: 1200,
+                }
+                .to_string(),
+                format!("sync round end {f} ({word}) sent=600 received=1200")
+            );
+        }
+    }
+
+    #[test]
+    fn sync_events_take_no_free_form_text() {
+        // Every field is a typed value: a wallet name (local), a fingerprint, a closed class
+        // or a number. Nothing here can carry a wallet id, state vector, title or key.
+        let wallet = WalletName::parse("W").unwrap();
+        let line = LogEvent::SyncPossibleRollback { wallet: &wallet }.to_string();
+        assert!(!line.contains(':'), "no device ids or counters");
+    }
+}
+
+// --- 004 T134: a full sync run logs only closed events and no wallet data ---
+
+mod common;
+
+mod sync_log_scan {
+    use std::time::Duration;
+
+    use super::common::server::wait_for;
+    use super::common::sync::*;
+
+    const PREFIXES: &[&str] = &[
+        "started ",
+        "launch file ",
+        "protections applied",
+        "unlocked ",
+        "locked ",
+        "stopping",
+        "network off",
+        "network on ",
+        "pairing started",
+        "pairing succeeded ",
+        "peer connected ",
+        "peer disconnected ",
+        "device revoked ",
+        "dropped ",
+        "rejected ",
+        "sync round start ",
+        "sync round end ",
+        "sync merged ",
+        "sync pending stored ",
+        "sync possible rollback ",
+        "sync older state offered ",
+        "sync invalid copy ",
+        "sync cannot open copy ",
+        "sync self rollback recovered ",
+        "sync accepted older state ",
+        "sync state reset ",
+        "sync record corrupted ",
+        "wallet upgraded to format 2 ",
+        "sync peer legacy ",
+        "refused by peer ",
+        "peer refused ",
+    ];
+
+    #[test]
+    fn sync_logs_are_closed_events_without_wallet_data() {
+        let a = instance("LAPTOP-NAME-MARKER");
+        let b = instance("PHONE-NAME-MARKER");
+        a.create_wallet("Shared");
+        pair_via(&a, &b, a.peer_port);
+        copy_wallet_file(&a, &b, "Shared");
+        b.unlock("Shared");
+        a.add(
+            "Shared",
+            "TITLE-MARKER",
+            "USER-MARKER",
+            "PASSWORD-MARKER",
+            "URL-MARKER",
+            "NOTES-MARKER",
+        );
+        assert!(wait_for(Duration::from_secs(10), || b.titles("Shared")
+            == ["TITLE-MARKER"]));
+        let wallet_id = {
+            let v = vault_core::Vault::unlock(
+                &std::fs::read(a.wallet_file("Shared")).unwrap(),
+                vault_core::MasterPassword::new(PASSWORD.into()),
+                vault_core::DeviceId::new("x").unwrap(),
+                Box::new(vault_core::FixedClock::new(0)),
+            )
+            .unwrap();
+            v.wallet_id().to_string()
+        };
+        for log in [a.server.log_text(), b.server.log_text()] {
+            assert!(log.contains("sync round end"));
+            for line in log.lines() {
+                let body = line
+                    .strip_prefix("passwsyncd: ")
+                    .expect("one prefix per line");
+                assert!(
+                    PREFIXES
+                        .iter()
+                        .any(|p| body.starts_with(p) || body == p.trim_end()),
+                    "not a closed event: {line}"
+                );
+            }
+            for needle in [
+                "TITLE-MARKER",
+                "USER-MARKER",
+                "PASSWORD-MARKER",
+                "URL-MARKER",
+                "NOTES-MARKER",
+                PASSWORD,
+                wallet_id.as_str(),
+                "PHONE-NAME-MARKER",
+                "LAPTOP-NAME-MARKER",
+            ] {
+                assert!(!log.contains(needle), "{needle} in the log");
+            }
+        }
+    }
+}

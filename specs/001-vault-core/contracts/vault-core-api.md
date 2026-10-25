@@ -202,3 +202,28 @@ impl VaultStorage for FileStorage { /* atomic temp-file + fsync + rename; 0600 o
 Additional file-adapter guarantees (tested in this crate): interrupted store (temp written,
 rename not performed) leaves the old file intact; temp files are removed on error; created file
 mode is `0600` on Unix; missing parent directory → `Io`, missing file → `NotFound`.
+
+## Additive items from feature 004 (wallet sync)
+
+Recorded by 004 (see `specs/004-wallet-sync-protocol/contracts/vault-core-sync-api.md` and
+`file-format-v2.md`). Existing signatures are unchanged.
+
+- File format version 2 is written by `seal`/`save`; version 1 files are still read (each
+  entry becomes a single current version, `state[d]` = sum of the entry counters, empty
+  password epoch). `peek_format_version(bytes)` reads the header version without a password.
+- `StateVector` (wallet-level change counters, at most 256 devices) with `get`, `bump`,
+  `join`, `dominates`, `compare`, `iter`; `Vault::state`, `password_epoch`,
+  `format_version_loaded`, `device`. Every local change bumps this device's counter.
+- `Version` (one version of an entry: `modified_at`, `last_modified_by`, `version`, live
+  fields or tombstone, `content_hash`); `Entry` keeps the 001 accessors (reading the current
+  version) and adds `current`, `conflicts`, `versions`, `is_conflicted`, `from_versions`.
+  Editing or deleting a conflicted entry returns `VaultError::EntryConflicted` (resolve first).
+- `VaultStorage::store_versioned(bytes, &SaveMeta { wallet_id, state })`, default = `store`;
+  `Vault::save` calls it.
+- `OpenedCopy`, `Vault::open_copy_own_key`, `open_copy_with_password`, `needs_password`;
+  `Vault::merge`, `merge_saved`, `merge_choosing_password[_saved]`, `MergeReport`,
+  `MergeError`, `PasswordChoice`, `JUMP_BOUND`; `Vault::resolve`, `resolve_saved`,
+  `Resolution`, `conflicted`, `versions`; `change_master_password_saved`.
+- New `VaultError` variants: `TooManyDevices`, `CounterOverflow`, `EntryConflicted`,
+  `NotConflicted`, `InvalidVersionIndex`.
+- `testkit`: `seal_payload`, `fork`, `copy_of`, `with_state_counter`.

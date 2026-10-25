@@ -11,8 +11,10 @@ use crate::error::Error;
 use crate::identity::{DeviceId, DeviceKey};
 use crate::name::DeviceName;
 use crate::noise;
-use crate::pairing::{CHANNEL_PROLOGUE, NOISE_CHANNEL};
-use crate::wire::{HelloKind, MAX_FRAME, Payload, hello};
+use crate::pairing::{CHANNEL_PROLOGUE, CHANNEL_PROLOGUE_V2, NOISE_CHANNEL};
+use crate::wire::{
+    HelloKind, HelloVersion, MAX_FRAME, Payload, hello_versioned, parse_hello_versioned,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ChannelError {
@@ -36,6 +38,10 @@ pub struct Channel {
     dialer_id: DeviceId,
     is_dialer: bool,
     closed: bool,
+    /// 004: Hello version of this channel (v2 carries sync frames).
+    version: HelloVersion,
+    /// 004: Noise handshake hash, equal on both ends and unique per session (R9).
+    session: [u8; 32],
 }
 
 /// Shows only public facts; never key material.
@@ -73,6 +79,32 @@ impl Channel {
 
     pub fn is_closed(&self) -> bool {
         self.closed
+    }
+
+    /// 004: whether this channel was negotiated with Hello v2 (sync frames allowed).
+    pub fn sync_enabled(&self) -> bool {
+        self.version == HelloVersion::V2
+    }
+
+    /// 004: the Noise handshake hash (32 bytes), equal on both ends, different per session.
+    /// Not secret; binds sync tags to this session.
+    pub fn session_hash(&self) -> [u8; 32] {
+        self.session
+    }
+
+    /// 004: encrypts a `SyncCtl` or `CopyData` payload; only on a sync-enabled channel.
+    pub fn seal_sync(&mut self, payload: &Payload) -> Result<Vec<u8>, ChannelError> {
+        let valid = match payload {
+            Payload::SyncCtl { fragment, .. } => {
+                (1..=crate::wire::MAX_SYNC_CHUNK).contains(&fragment.len())
+            }
+            Payload::CopyData { bytes } => (1..=crate::wire::MAX_SYNC_CHUNK).contains(&bytes.len()),
+            _ => false,
+        };
+        if !valid || !self.sync_enabled() {
+            return Err(ChannelError::Protocol);
+        }
+        self.seal_bytes(&payload.encode())
     }
 
     /// Encrypts a maintenance message.
@@ -127,22 +159,49 @@ impl Channel {
             .transport
             .read_message(frame, buf.as_mut())
             .map_err(|_| ChannelError::Crypto)?;
-        match Payload::decode(&buf[..n]) {
+        let decoded = if self.sync_enabled() {
+            Payload::decode_v2(&buf[..n])
+        } else {
+            Payload::decode(&buf[..n])
+        };
+        match decoded {
             Ok(
-                payload @ (Payload::Keepalive | Payload::NameUpdate { .. } | Payload::Close { .. }),
+                payload @ (Payload::Keepalive
+                | Payload::NameUpdate { .. }
+                | Payload::Close { .. }
+                | Payload::SyncCtl { .. }
+                | Payload::CopyData { .. }),
             ) => Ok(payload),
             _ => Err(ChannelError::Protocol),
         }
     }
 }
 
+/// The prologue for `hello` (v1 or v2); an unknown Hello falls back to v1, which then fails
+/// the handshake against any real peer.
 fn prologue(hello: &[u8]) -> Vec<u8> {
-    [CHANNEL_PROLOGUE, hello].concat()
+    let base = match parse_hello_versioned(hello) {
+        Ok((_, HelloVersion::V2)) => CHANNEL_PROLOGUE_V2,
+        _ => CHANNEL_PROLOGUE,
+    };
+    [base, hello].concat()
+}
+
+fn hello_version(hello: &[u8]) -> HelloVersion {
+    parse_hello_versioned(hello).map_or(HelloVersion::V1, |(_, version)| version)
+}
+
+fn handshake_hash(hs: &HandshakeState) -> [u8; 32] {
+    let mut session = [0u8; 32];
+    let hash = hs.get_handshake_hash();
+    let n = hash.len().min(32);
+    session[..n].copy_from_slice(&hash[..n]);
+    session
 }
 
 enum DialStep {
     AwaitMsg2(Box<HandshakeState>),
-    AwaitWelcome(Box<TransportState>, [u8; 32]),
+    AwaitWelcome(Box<TransportState>, [u8; 32], [u8; 32]),
     Done,
 }
 
@@ -153,12 +212,24 @@ pub struct ChannelDialer {
     name: DeviceName,
     step: DialStep,
     out: Vec<Vec<u8>>,
+    version: HelloVersion,
 }
 
 impl ChannelDialer {
     /// Queues the Hello and msg1. `expected` is the pinned key of the peer being dialed.
+    /// Channel protocol v1 (003).
     pub fn start(key: &DeviceKey, expected: [u8; 32], name: DeviceName) -> Result<Self, Error> {
-        let hello = hello(HelloKind::Channel);
+        Self::start_version(key, expected, name, HelloVersion::V1)
+    }
+
+    /// As [`start`](Self::start) with the given Hello version (004: v2 enables sync).
+    pub fn start_version(
+        key: &DeviceKey,
+        expected: [u8; 32],
+        name: DeviceName,
+        version: HelloVersion,
+    ) -> Result<Self, Error> {
+        let hello = hello_versioned(HelloKind::Channel, version);
         let prologue = prologue(&hello);
         let mut hs = noise::builder(NOISE_CHANNEL, key.private_bytes(), &prologue)?
             .build_initiator()
@@ -170,6 +241,7 @@ impl ChannelDialer {
             name,
             step: DialStep::AwaitMsg2(Box::new(hs)),
             out: vec![hello.to_vec(), msg1],
+            version,
         })
     }
 
@@ -208,25 +280,30 @@ impl ChannelDialer {
                 );
                 let msg3 =
                     noise::write_handshake(&mut hs, &hello).map_err(|_| ChannelError::Crypto)?;
+                let session = handshake_hash(&hs);
                 let ts = hs.into_transport_mode().map_err(|_| ChannelError::Crypto)?;
                 self.out.push(msg3);
-                self.step = DialStep::AwaitWelcome(Box::new(ts), presented);
+                self.step = DialStep::AwaitWelcome(Box::new(ts), presented, session);
                 Ok(None)
             }
-            DialStep::AwaitWelcome(mut ts, peer_public) => match noise::open(&mut ts, body) {
-                Ok(Payload::Welcome { name }) => Ok(Some(Channel {
-                    transport: ts,
-                    peer_public,
-                    peer_name: name,
-                    dialer_id: self.own_id,
-                    is_dialer: true,
-                    closed: false,
-                })),
-                Ok(Payload::Refused) => Err(ChannelError::Refused),
-                Ok(_) => Err(ChannelError::Protocol),
-                Err(Error::Crypto) => Err(ChannelError::Crypto),
-                Err(_) => Err(ChannelError::Protocol),
-            },
+            DialStep::AwaitWelcome(mut ts, peer_public, session) => {
+                match noise::open(&mut ts, body) {
+                    Ok(Payload::Welcome { name }) => Ok(Some(Channel {
+                        transport: ts,
+                        peer_public,
+                        peer_name: name,
+                        dialer_id: self.own_id,
+                        is_dialer: true,
+                        closed: false,
+                        version: self.version,
+                        session,
+                    })),
+                    Ok(Payload::Refused) => Err(ChannelError::Refused),
+                    Ok(_) => Err(ChannelError::Protocol),
+                    Err(Error::Crypto) => Err(ChannelError::Crypto),
+                    Err(_) => Err(ChannelError::Protocol),
+                }
+            }
             DialStep::Done => Err(ChannelError::Protocol),
         }
     }
@@ -305,6 +382,7 @@ impl ChannelResponder {
                     _ => return Err(ChannelError::Protocol),
                 };
                 let presented = noise::remote_static(&hs).map_err(|_| ChannelError::Protocol)?;
+                let session = handshake_hash(&hs);
                 let mut transport =
                     Box::new(hs.into_transport_mode().map_err(|_| ChannelError::Crypto)?);
                 let pinned = is_pinned(&presented);
@@ -330,6 +408,8 @@ impl ChannelResponder {
                     dialer_id: DeviceId::from_public(&presented),
                     is_dialer: false,
                     closed: false,
+                    version: hello_version(&self.hello),
+                    session,
                 }))
             }
             RespStep::Done => Err(ChannelError::Protocol),

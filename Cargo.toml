@@ -6,6 +6,7 @@ members = [
     "crates/passwsyncd",
     "crates/device-link",
     "crates/device-link-net",
+    "crates/wallet-sync",
 ]
 resolver = "3"
 
@@ -27,6 +28,8 @@ snow = { version = "=0.10.0", default-features = false, features = ["use-chacha2
 spake2 = "=0.4.0"
 curve25519-dalek = "4.1"
 sha2 = "0.10"
+# 004 wallet sync: HMAC-SHA-256 tags (already in the tree via hkdf/spake2, research R17).
+hmac = "0.12"
 if-addrs = { version = "=0.15.0", features = ["link-local"] }
 qrcodegen = "=1.8.0"
 

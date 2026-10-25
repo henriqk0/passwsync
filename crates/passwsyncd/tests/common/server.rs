@@ -76,6 +76,17 @@ pub fn fast_timing() -> Timing {
     }
 }
 
+/// 004: short sync timers for loopback tests.
+pub fn fast_sync_timing() -> wallet_sync::sched::SyncTiming {
+    wallet_sync::sched::SyncTiming {
+        quiet: Duration::from_millis(150),
+        safety: Duration::from_secs(3600),
+        backoff_min: Duration::from_millis(300),
+        backoff_max: Duration::from_secs(2),
+        round_timeout: Duration::from_secs(3),
+    }
+}
+
 /// Polls `check` every 20 ms for up to `limit`.
 pub fn wait_for(limit: Duration, mut check: impl FnMut() -> bool) -> bool {
     let start = std::time::Instant::now();
@@ -160,6 +171,7 @@ impl Fixture {
                 interfaces: Some(Arc::new(FakeInterfaces::loopback())),
                 timing: fast_timing(),
                 announce_ports,
+                sync: fast_sync_timing(),
             },
         };
         (deps, buffer, clock)

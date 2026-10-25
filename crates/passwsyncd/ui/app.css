@@ -136,3 +136,8 @@ button[aria-current="true"] { font-weight: bold; }
 .nearby-list, .paired-list, .warnings-list { list-style: none; padding: 0; margin: 0 0 0.75rem; }
 .nearby-list li, .paired-list li, .warnings-list li { padding: 0.25rem 0; }
 .warnings-list li { color: var(--danger); }
+
+/* 004: sync status and conflicts */
+.badge.warn { border-color: #b45309; color: #b45309; }
+.versions { padding-left: 1.2em; }
+.versions .version { margin-bottom: 1em; }

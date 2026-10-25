@@ -1,4 +1,12 @@
-use crate::StorageError;
+use crate::{StateVector, StorageError, WalletId};
+
+/// What a save is writing, for adapters that journal saves (004, research R12): the
+/// wallet id and state vector of the (encrypted) bytes, which they cannot decrypt.
+#[derive(Clone, Copy, Debug)]
+pub struct SaveMeta<'a> {
+    pub wallet_id: WalletId,
+    pub state: &'a StateVector,
+}
 
 /// Port to wherever the encrypted wallet bytes live. Receives only ciphertext.
 pub trait VaultStorage {
@@ -6,6 +14,12 @@ pub trait VaultStorage {
     fn load(&self) -> Result<Vec<u8>, StorageError>;
     /// Atomically replaces the stored bytes.
     fn store(&mut self, bytes: &[u8]) -> Result<(), StorageError>;
+    /// Called by [`Vault::save`](crate::Vault::save). Default: [`store`](Self::store), so
+    /// 001 adapters work unchanged.
+    fn store_versioned(&mut self, bytes: &[u8], meta: &SaveMeta<'_>) -> Result<(), StorageError> {
+        let _ = meta;
+        self.store(bytes)
+    }
 }
 
 /// In-memory fake of the storage port.
