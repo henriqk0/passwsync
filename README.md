@@ -8,6 +8,14 @@ An open-source P2P straightforward password manager between chosen devices
 login. Each wallet's master password is the only secret, and you need it once per wallet
 after each service start.
 
+### Install on Arch Linux
+
+`packaging/` holds an AUR recipe that builds `passwsyncd` from the pinned release archive and
+installs it as a confined systemd user service with a desktop launcher (`passwsync-open`).
+The package never enables or starts the service and never writes your configuration. See
+[packaging/README.md](packaging/README.md) for usage, the one re-login it needs, its
+confinement and how to verify the package offline (`packaging/verify.sh`).
+
 ### Build
 
 ```sh

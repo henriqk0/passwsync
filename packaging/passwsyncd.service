@@ -1,0 +1,64 @@
+[Unit]
+Description=passwsync local password service (loopback web UI)
+Documentation=file:/usr/share/doc/passwsync/README.md
+StartLimitIntervalSec=5min
+StartLimitBurst=5
+
+[Service]
+Type=exec
+ExecStartPre=+/usr/bin/sh -c 'if [ "$${XDG_CONFIG_HOME:-$$HOME/.config}" != "$$HOME/.config" ] || [ "$${XDG_DATA_HOME:-$$HOME/.local/share}" != "$$HOME/.local/share" ]; then echo "path: custom XDG_CONFIG_HOME/XDG_DATA_HOME need a unit override, see /usr/share/doc/passwsync/README.md" >&2; exit 2; fi; exec /usr/bin/mkdir -p -m 0700 "$$HOME/.config/passwsync" "$$HOME/.local/share/passwsync" "$$XDG_RUNTIME_DIR/passwsync"'
+ExecStartPre=/usr/bin/findmnt --noheadings --output TARGET --target %h --types tmpfs
+ExecStart=/usr/bin/passwsyncd
+Restart=on-failure
+RestartPreventExitStatus=2 3 4
+RestartSec=5s
+KillSignal=SIGTERM
+TimeoutStopSec=15s
+
+# Limits (FR-007); the service still checks them itself and fails closed (exit 3).
+LimitMEMLOCK=256M
+LimitCORE=0
+UMask=0077
+
+# No privileges (FR-008)
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictRealtime=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+
+# File system, devices, kernel (FR-009, FR-011)
+PrivateUsers=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateIPC=yes
+# Own PID namespace: without it the user manager cannot mount a fresh /proc and
+# ProtectProc=invisible has no effect (measured, systemd 262). The service has handlers for
+# SIGTERM/SIGINT/SIGHUP and starts no child process, so running as PID 1 is safe.
+PrivatePIDs=yes
+ProtectSystem=strict
+ProtectHome=tmpfs
+# The runtime directory is bound too: ProtectHome=tmpfs also hides /run/user, so a
+# ReadWritePaths= grant for it cannot be resolved inside the namespace (status 226, measured).
+BindPaths=%h/.config/passwsync %h/.local/share/passwsync %t/passwsync
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+KeyringMode=private
+RestrictNamespaces=yes
+
+# Sockets (FR-010): IPv4 for the loopback UI and, when the person enables it, the LAN
+# listener/discovery; netlink for interface listing. No AF_UNIX, no AF_INET6.
+RestrictAddressFamilies=AF_INET AF_NETLINK
+
+[Install]
+WantedBy=default.target

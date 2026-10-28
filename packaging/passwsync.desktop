@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=passwsync
+GenericName=Password Manager
+Comment=Open the passwsync password manager in your browser
+Exec=/usr/bin/passwsync-open
+Icon=dialog-password
+Terminal=false
+StartupNotify=false
+Categories=Utility;
+Keywords=password;wallet;

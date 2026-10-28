@@ -1,0 +1,26 @@
+# passwsync install hooks: messages only (FR-016). Each body is printf builtin calls and
+# nothing else: no external command, no file access, no service is enabled, started,
+# stopped or restarted, and no home directory is read or changed.
+
+post_install() {
+    printf '%s\n' 'passwsync: the service is installed but never enabled or started automatically.'
+    printf '%s\n' '  Networking is off by default. It is turned on only by you, by editing your own'
+    printf '%s\n' '  configuration file ~/.config/passwsync/config (see /usr/share/doc/passwsync/README.md).'
+    printf '%s\n' '  The 256 MiB memory-lock limit the service needs applies after you log out and log back in.'
+    printf '%s\n' '  Then, to start it now and at every login:'
+    printf '%s\n' '    systemctl --user enable --now passwsyncd.service'
+    printf '%s\n' '  Open the interface from the menu entry "passwsync" or by running: passwsync-open'
+}
+
+post_upgrade() {
+    printf '%s\n' 'passwsync: a running service is not restarted automatically and keeps the old version.'
+    printf '%s\n' '  To use the new version run: systemctl --user restart passwsyncd.service'
+    printf '%s\n' '  Restarting locks all wallets (unlock them again in the interface).'
+}
+
+post_remove() {
+    printf '%s\n' 'passwsync: your wallets, keys and settings were kept:'
+    printf '%s\n' '    ~/.config/passwsync  ~/.local/share/passwsync  $XDG_RUNTIME_DIR/passwsync'
+    printf '%s\n' '  Deleting them is your decision. A service that is still enabled can be stopped with:'
+    printf '%s\n' '    systemctl --user disable --now passwsyncd.service'
+}

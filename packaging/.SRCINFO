@@ -1,0 +1,20 @@
+pkgbase = passwsync
+	pkgdesc = Offline peer-to-peer password manager: local service with a browser UI
+	pkgver = 0.1.0
+	pkgrel = 1
+	url = https://github.com/henriqk0/passwsync
+	install = passwsync.install
+	arch = x86_64
+	license = MPL-2.0
+	makedepends = cargo
+	depends = gcc-libs
+	depends = glibc
+	depends = systemd
+	depends = xdg-utils
+	optdepends = libnotify: desktop notification when the launcher fails
+	options = !debug
+	options = !lto
+	source = passwsync-0.1.0.tar.gz::https://github.com/henriqk0/passwsync/archive/refs/tags/v0.1.0.tar.gz
+	sha256sums = 0000000000000000000000000000000000000000000000000000000000000000
+
+pkgname = passwsync
