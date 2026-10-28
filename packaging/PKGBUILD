@@ -1,0 +1,85 @@
+# Maintainer: henriqk0 <henriquedeslima2811@gmail.com>
+#
+# Source-building recipe for the passwsync local service (specs/006-aur-packaging-service).
+# One pinned release archive; every installed file comes from packaging/ inside it.
+# Release steps: tag v$pkgver, run `updpkgsums` in the AUR copy, then `makepkg --printsrcinfo
+# > .SRCINFO`. Before the first release the checksum below is all zeros, which fails closed.
+
+pkgname=passwsync
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='Offline peer-to-peer password manager: local service with a browser UI'
+arch=('x86_64')
+url='https://github.com/henriqk0/passwsync'
+license=('MPL-2.0')
+depends=('gcc-libs' 'glibc' 'systemd' 'xdg-utils')
+optdepends=('libnotify: desktop notification when the launcher fails')
+makedepends=('cargo')
+options=('!debug' '!lto')
+install=passwsync.install
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('0000000000000000000000000000000000000000000000000000000000000000')
+
+prepare() {
+    cd "$pkgname-$pkgver"
+    export RUSTUP_TOOLCHAIN=stable
+    cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+    cd "$pkgname-$pkgver"
+    export RUSTUP_TOOLCHAIN=stable
+    export CARGO_TARGET_DIR=target
+    export CARGO_INCREMENTAL=0
+    # Replaces (never appends to) the builder's flags; the last matching prefix wins in rustc,
+    # so the most specific one (srcdir) comes last.
+    export RUSTFLAGS="--remap-path-prefix=$HOME=/builder --remap-path-prefix=$startdir=/startdir --remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}=/cargo --remap-path-prefix=$srcdir=/build"
+    unset CARGO_ENCODED_RUSTFLAGS
+    export CARGO_PROFILE_RELEASE_OPT_LEVEL=3
+    export CARGO_PROFILE_RELEASE_DEBUG=false
+    export CARGO_PROFILE_RELEASE_STRIP=symbols
+    export CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1
+    export CARGO_PROFILE_RELEASE_LTO=true
+    export CARGO_PROFILE_RELEASE_PANIC=unwind
+    export CARGO_PROFILE_RELEASE_INCREMENTAL=false
+    cargo build --frozen --release -p passwsyncd --bin passwsyncd
+}
+
+check() {
+    cd "$pkgname-$pkgver"
+    export RUSTUP_TOOLCHAIN=stable
+    export CARGO_TARGET_DIR=target
+    # The whole workspace suite runs. Tests that do not run (FR-005):
+    # #[ignore]d release-mode performance and resource measurements (not correctness):
+    #   vault-core/perf::unlock_with_default_kdf_takes_between_0_3_and_2_seconds (release-mode performance)
+    #   vault-core/perf::list_and_search_over_10000_entries_take_under_100_ms (release-mode performance)
+    #   vault-core/perf::ten_thousand_unlocked_entries_peak_under_64_mb (release-mode memory)
+    #   vault-core/perf::merging_a_10000_entry_copy_differing_by_one_entry_is_bounded (release-mode performance and memory)
+    #   passwsyncd/resources_share::idle_sharing_sends_nothing_and_wakes_nothing (resource measurement)
+    #   passwsyncd/resources_share::two_sync_transfers_make_a_share_busy (resource measurement)
+    #   passwsyncd/flood_network::udp_and_tcp_flood_keeps_memory_bounded_and_the_ui_responsive (resource measurement)
+    #   passwsyncd/api_nearby::nearby_stays_bounded_and_responsive_under_a_flood (resource measurement)
+    #   passwsyncd/resources_network::five_idle_peers_add_less_than_10_mb (resource measurement)
+    #   passwsyncd/perf::listing_and_searching_10000_entries_takes_under_300_ms (release-mode performance)
+    #   passwsyncd/share_perf::a_10000_credential_wallet_is_shared_in_under_10_seconds (performance)
+    #   passwsyncd/perf_memory::one_unlocked_1000_entry_wallet_stays_under_50_mb_and_idles_quietly (release-mode memory and idle CPU)
+    #   device-link-net/channel_loopback::connection_flood_stays_bounded (resource measurement)
+    #   passwsyncd/resources_sync::five_peers_with_ten_wallets_idle_cheaply (live resource measurement)
+    #   device-link-net/resources::idle_with_five_peers_stays_within_budget (resource measurement)
+    #   passwsyncd/sync_perf::a_10000_entry_wallet_differing_by_one_entry_syncs_in_under_10_seconds (performance)
+    # Self-skipping:
+    #   passwsyncd/startup::real_binary_starts_when_the_memlock_limit_allows (skips itself below a 256 MiB hard memlock limit)
+    cargo test --frozen --workspace
+}
+
+package() {
+    cd "$pkgname-$pkgver"
+    export RUSTUP_TOOLCHAIN=stable
+    install -Dm0755 target/release/passwsyncd "$pkgdir/usr/bin/passwsyncd"
+    install -Dm0755 packaging/passwsync-open "$pkgdir/usr/bin/passwsync-open"
+    install -Dm0644 packaging/passwsyncd.service "$pkgdir/usr/lib/systemd/user/passwsyncd.service"
+    install -Dm0644 packaging/passwsync-memlock.conf "$pkgdir/usr/lib/systemd/system/user@.service.d/passwsync-memlock.conf"
+    install -Dm0644 packaging/passwsync.desktop "$pkgdir/usr/share/applications/passwsync.desktop"
+    install -Dm0644 packaging/README.md "$pkgdir/usr/share/doc/passwsync/README.md"
+    install -Dm0644 LICENSE "$pkgdir/usr/share/licenses/passwsync/LICENSE"
+}

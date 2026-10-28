@@ -1,0 +1,91 @@
+#!/bin/sh
+# passwsync-open: make sure the passwsync user service runs, then open its one-time launch
+# address in the default browser (contracts/launcher.md). The address is handed only to
+# xdg-open, whose output is discarded; it is never printed, logged or stored. The service is
+# started, never enabled. Exit: 0 opened, 1 no valid launch file, 2 usage/environment,
+# 3 no browser could be opened.
+set -eu
+LC_ALL=C
+export LC_ALL
+
+E_USAGE='usage: passwsync-open (no arguments)'
+E_ENV='cannot start: XDG_RUNTIME_DIR, systemctl or xdg-open is missing'
+E_TIMEOUT='the service did not provide a launch address within 10 seconds; check: systemctl --user status passwsyncd.service'
+E_INVALID='the launch file is not safe to use (owner, permissions or format); check: systemctl --user status passwsyncd.service'
+E_OPENER='no browser could be opened (xdg-open failed); set a default browser and try again'
+
+die() { # exit-code fixed-message
+    printf 'passwsync-open: %s\n' "$2" >&2
+    if command -v notify-send >/dev/null 2>&1; then
+        notify-send --app-name=passwsync passwsync "$2" </dev/null >/dev/null 2>&1 || :
+    fi
+    exit "$1"
+}
+
+[ "$#" -eq 0 ] || die 2 "$E_USAGE"
+case ${XDG_RUNTIME_DIR:-} in
+/*) ;;
+*) die 2 "$E_ENV" ;;
+esac
+command -v systemctl >/dev/null 2>&1 || die 2 "$E_ENV"
+command -v xdg-open >/dev/null 2>&1 || die 2 "$E_ENV"
+
+file=$XDG_RUNTIME_DIR/passwsync/launch-url
+uid=$(id -u)
+
+if ! systemctl --user is-active --quiet passwsyncd.service </dev/null >/dev/null 2>&1; then
+    # Not fatal: a manually started instance makes the unit exit 4 but owns a valid file.
+    systemctl --user start passwsyncd.service </dev/null >/dev/null 2>&1 || :
+fi
+
+url=
+# valid: the launch file is a regular file (not followed if a symlink) owned by this user,
+# with no group/other permission bit, 1-128 bytes, holding exactly one line
+# http://127.0.0.1:<1024-65535>/launch/<64 lowercase hex> and its newline.
+valid() {
+    info=$(stat -c '%F|%u|%a|%s' -- "$file" 2>/dev/null) || return 1
+    ftype=${info%%|*}
+    rest=${info#*|}
+    fuid=${rest%%|*}
+    rest=${rest#*|}
+    fmode=${rest%%|*}
+    fsize=${rest#*|}
+    [ "$ftype" = "regular file" ] || return 1
+    [ "$fuid" = "$uid" ] || return 1
+    case $fmode in '' | *[!0-7]*) return 1 ;; esac
+    [ $((0$fmode & 077)) -eq 0 ] || return 1
+    case $fsize in '' | *[!0-9]*) return 1 ;; esac
+    [ "$fsize" -ge 1 ] && [ "$fsize" -le 128 ] || return 1
+    u=$(cat -- "$file" 2>/dev/null) || return 1
+    case $u in http://127.0.0.1:*) ;; *) return 1 ;; esac
+    rest=${u#http://127.0.0.1:}
+    port=${rest%%/*}
+    rest=${rest#"$port"}
+    case $port in '' | 0* | *[!0-9]*) return 1 ;; esac
+    [ "${#port}" -ge 4 ] && [ "${#port}" -le 5 ] || return 1
+    [ "$port" -ge 1024 ] && [ "$port" -le 65535 ] || return 1
+    case $rest in /launch/*) ;; *) return 1 ;; esac
+    tok=${rest#/launch/}
+    [ "${#tok}" -eq 64 ] || return 1
+    case $tok in *[!0-9a-f]*) return 1 ;; esac
+    [ "$fsize" -eq $((${#u} + 1)) ] || return 1
+    url=$u
+}
+
+seen=0
+i=0
+while :; do
+    if [ -e "$file" ] || [ -L "$file" ]; then
+        seen=1
+        if valid; then break; fi
+    fi
+    i=$((i + 1))
+    if [ "$i" -ge 100 ]; then
+        [ "$seen" -eq 1 ] && die 1 "$E_INVALID"
+        die 1 "$E_TIMEOUT"
+    fi
+    sleep 0.1
+done
+
+xdg-open "$url" </dev/null >/dev/null 2>&1 || die 3 "$E_OPENER"
+exit 0
