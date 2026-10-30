@@ -1,0 +1,9 @@
+[versions]
+agp = "9.4.1"
+jna = "5.19.1"
+
+[libraries]
+jna = { module = "net.java.dev.jna:jna", version.ref = "jna" }
+
+[plugins]
+android-application = { id = "com.android.application", version.ref = "agp" }

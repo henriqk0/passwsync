@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">passwsync</string>
+    <string name="unlock_title">Unlock wallet</string>
+    <string name="master_password">Master password</string>
+    <string name="search">Search</string>
+    <string name="unlock">Unlock</string>
+    <string name="lock_all">Lock all wallets</string>
+</resources>

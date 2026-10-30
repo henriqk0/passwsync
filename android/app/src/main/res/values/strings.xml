@@ -1,0 +1,183 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- English only (X6): every user-visible text of the app. -->
+<resources>
+    <string name="app_name">passwsync</string>
+    <string name="ok">OK</string>
+    <string name="cancel">Cancel</string>
+    <string name="back">Back</string>
+    <string name="start_failed">passwsync could not start: its private storage is not usable.</string>
+
+    <!-- Wallet list -->
+    <string name="wallets_title">Wallets</string>
+    <string name="no_wallets">No wallet on this phone yet.</string>
+    <string name="create_wallet">Create wallet</string>
+    <string name="lock_all">Lock all wallets</string>
+    <string name="security">Security status</string>
+    <string name="settings">Settings</string>
+    <string name="about">About</string>
+    <string name="wallet_locked">%1$s (locked)</string>
+    <string name="wallet_unlocked">%1$s (unlocked)</string>
+
+    <!-- Create -->
+    <string name="create_title">New wallet</string>
+    <string name="wallet_name">Wallet name</string>
+    <string name="new_master_password">New master password (at least 12 characters)</string>
+    <string name="confirm_master_password">Repeat the master password</string>
+    <string name="create">Create</string>
+    <string name="create_warning">There is no way to recover a forgotten master password.</string>
+
+    <!-- Unlock -->
+    <string name="unlock_title">Unlock wallet</string>
+    <string name="master_password">Master password</string>
+    <string name="unlock">Unlock</string>
+    <string name="unlocking">Unlocking…</string>
+
+    <!-- Change password -->
+    <string name="change_password_title">Change master password</string>
+    <string name="current_master_password">Current master password</string>
+    <string name="change_password">Change password</string>
+    <string name="password_changed">The master password was changed.</string>
+
+    <!-- Security -->
+    <string name="security_title">Security status</string>
+    <string name="core_dumps">Core dumps disabled</string>
+    <string name="non_dumpable">Process protected from inspection</string>
+    <string name="memory_lock">Memory locking</string>
+    <string name="memory_full">Full: the whole app is kept out of swap</string>
+    <string name="memory_secrets_only">Secrets only: pages holding secrets are kept out of swap</string>
+    <string name="memory_none">None: memory could not be locked</string>
+    <string name="yes">Yes</string>
+    <string name="no">No</string>
+    <string name="protection_missing">A required protection is missing: wallets cannot be created or opened on this device.</string>
+
+    <!-- Settings -->
+    <string name="settings_title">Settings</string>
+    <string name="auto_lock_minutes">Lock after minutes of inactivity (1 to 240)</string>
+    <string name="clipboard_clear_seconds">Clear the clipboard after seconds (5 to 300)</string>
+    <string name="sync_interval_minutes">Sync safety interval in minutes (15 to 1440)</string>
+    <string name="device_name">Device name</string>
+    <string name="save">Save</string>
+    <string name="restart_now">Restart now</string>
+    <string name="restart_required">Saved. The new settings apply after a restart.</string>
+    <string name="settings_reset">The settings file could not be read and was replaced by the defaults. Networking is off.</string>
+    <string name="restart_confirm_title">Restart passwsync?</string>
+    <string name="restart_confirm">Every wallet is locked and the clipboard is cleared.</string>
+
+    <!-- About -->
+    <string name="about_title">About passwsync</string>
+    <string name="about_storage">Wallets are stored only in this app\'s private storage. Uninstalling the app or clearing its data deletes every wallet that exists only on this phone. Keep a synced copy on another device.</string>
+    <string name="about_screen_readers">Screen readers can read the content that is visible on screen, including a revealed password.</string>
+    <string name="about_backup">The app is excluded from cloud backup and device-to-device transfer.</string>
+
+    <!-- Credentials -->
+    <string name="credentials_title">Credentials</string>
+    <string name="search">Search</string>
+    <string name="add_credential">Add credential</string>
+    <string name="lock_wallet">Lock wallet</string>
+    <string name="no_credentials">No credential matches.</string>
+    <string name="clipboard_countdown">Clipboard clears in %1$d s</string>
+
+    <!-- Credential view -->
+    <string name="title">Title</string>
+    <string name="username">Username</string>
+    <string name="url">URL</string>
+    <string name="notes">Notes</string>
+    <string name="password">Password</string>
+    <string name="hidden_password">••••••••</string>
+    <string name="reveal">Reveal password</string>
+    <string name="hide">Hide password</string>
+    <string name="copy_username">Copy username</string>
+    <string name="copy_password">Copy password</string>
+    <string name="edit">Edit</string>
+    <string name="delete">Delete</string>
+    <string name="delete_confirm_title">Delete this credential?</string>
+    <string name="delete_confirm">The credential is removed from this wallet and, when synced, from your other devices.</string>
+    <string name="conflicted">This credential has concurrent versions.</string>
+
+    <!-- Credential edit -->
+    <string name="edit_title">Edit credential</string>
+    <string name="new_credential_title">New credential</string>
+    <string name="credential_password">Password (leave empty to keep the current one)</string>
+
+    <!-- Network, devices, pairing (US4) -->
+    <string name="network">Network</string>
+    <string name="network_title">Network</string>
+    <string name="no_local_network">No local network (Wi-Fi or Ethernet without VPN)</string>
+    <string name="networking_on">Turn networking on</string>
+    <string name="networking_off">Turn networking off</string>
+    <string name="networking_on_confirm_title">Turn networking on?</string>
+    <string name="networking_on_confirm">This device becomes visible on the local network to pair and sync with your devices. Nothing is sent to the internet.</string>
+    <string name="restart_required">Applies after Restart now in Settings.</string>
+    <string name="devices">Paired devices</string>
+    <string name="devices_title">Paired devices</string>
+    <string name="devices_empty">No paired device.</string>
+    <string name="device_format">%1$s (%2$s): %3$s</string>
+    <string name="this_device_format">%1$s (%2$s)</string>
+    <string name="nearby_format">%1$s at %2$s</string>
+    <string name="revoke">Revoke</string>
+    <string name="revoke_confirm_title">Revoke this device?</string>
+    <string name="revoke_confirm">The device can no longer sync with this phone; wallets it shared and you have not opened are deleted.</string>
+    <string name="reset_identity">Reset device identity</string>
+    <string name="reset_identity_confirm_title">Reset the device identity?</string>
+    <string name="reset_identity_confirm">Every paired device must be paired again. Wallets are not affected.</string>
+    <string name="pair_device">Pair a device</string>
+    <string name="pairing_title">Pair a device</string>
+    <string name="show_code">Show a pairing code</string>
+    <string name="accept_pairing">Fingerprints match: accept</string>
+    <string name="reject_pairing">Reject</string>
+    <string name="cancel_pairing">Cancel pairing</string>
+    <string name="join_device">Or join a nearby device showing a code</string>
+    <string name="pairing_code_hint">Pairing code</string>
+    <string name="join">Join</string>
+    <string name="net_state_off">Networking is off</string>
+    <string name="net_state_on">Networking is on</string>
+    <string name="net_state_paused">Networking is paused while the app is in the background</string>
+    <string name="net_state_identity_unusable">The device identity cannot be used</string>
+    <string name="net_state_peers_unusable">The paired devices cannot be read</string>
+    <string name="net_state_port_in_use">The network port is in use</string>
+
+    <!-- Sync status, conflicts (US5) -->
+    <string name="sync_status">Sync status</string>
+    <string name="sync_status_title">Sync status</string>
+    <string name="sync_now">Sync now</string>
+    <string name="sync_running">Syncing…</string>
+    <string name="sync_wallets">Wallets</string>
+    <string name="sync_peers">Devices</string>
+    <string name="sync_wallet_format">%1$s: %2$s</string>
+    <string name="sync_state_off">sync off</string>
+    <string name="sync_state_disabled">sync disabled</string>
+    <string name="sync_state_rollback">possible rollback</string>
+    <string name="sync_state_conflicts">%1$d conflicts</string>
+    <string name="sync_state_waiting">changes waiting</string>
+    <string name="sync_state_syncing">syncing</string>
+    <string name="sync_state_error">sync error</string>
+    <string name="sync_state_not_synced">not synced</string>
+    <string name="sync_state_in_sync">in sync</string>
+    <string name="conflicts_title">Conflicts</string>
+    <string name="conflict_format">%1$s (%2$d versions)</string>
+    <string name="version_format">%1$s / %2$s (%3$s)</string>
+    <string name="keep_this_version">Keep this version</string>
+    <string name="keep_both">Keep both</string>
+
+    <!-- Sharing (US6) -->
+    <string name="share">Share this wallet</string>
+    <string name="share_title">Share a wallet</string>
+    <string name="share_choose_device">Choose the paired device to share with</string>
+    <string name="accept_recipient">Name and fingerprint match: send</string>
+    <string name="cancel_invitation">Cancel invitation</string>
+    <string name="share_confirm_title">Send the wallet?</string>
+    <string name="share_confirm">The encrypted wallet is sent to this device. It opens only with the wallet\'s master password.</string>
+    <string name="receive_wallet">Receive a wallet</string>
+    <string name="receive_title">Receive a wallet</string>
+    <string name="receive_choose_device">Choose the device showing the code</string>
+    <string name="invite_code_hint">Invitation code</string>
+    <string name="redeem">Receive</string>
+    <string name="received_wallets">Received wallets</string>
+    <string name="received_title">Received wallets</string>
+    <string name="received_empty">No received wallet. Wallets not opened within 24 hours are deleted.</string>
+    <string name="received_local_name_hint">Name on this phone</string>
+    <string name="open_received">Open with its master password</string>
+    <string name="discard_received">Discard</string>
+    <string name="discard_confirm_title">Discard this wallet?</string>
+    <string name="discard_confirm">The received wallet is deleted from this phone without being opened.</string>
+</resources>

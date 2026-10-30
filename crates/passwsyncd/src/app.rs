@@ -9,21 +9,20 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 
+use host_runtime::wiring::{HostCore, HostDirs};
 use rustix::fs::{FlockOperation, flock};
-use vault_core::{KdfConfig, SystemClock};
-use wallet_service::{ElapsedClock, Service, ServiceConfig, Sessions, WalletDirectory};
+use vault_core::KdfConfig;
+use wallet_service::{ElapsedClock, ServiceConfig, Sessions};
 
 use crate::clock::OsElapsedClock;
 use crate::config::{self, ConfigError};
-use crate::fs_dir::FsWalletDirectory;
 use crate::hardening::{self, Hardening, OsHardening};
 use crate::http::server::{self, ServerThreads};
 use crate::http::{AppState, pages};
-use crate::log::{ErrorClass, LockReason, Log, LogEvent, Protection, Rejections};
-use crate::net_runtime::{NetDeps, NetRuntime};
+use crate::log::{ErrorClass, FatalLog, LockReason, Log, LogEvent, Protection, Rejections};
+use crate::net_runtime::NetDeps;
 use crate::paths::{self, Env, PathError, Paths};
 use crate::signals::{self, SignalThread};
-use crate::sync_runtime::{JournalingDirectory, SyncRuntime};
 
 pub const USAGE: &str = "Usage: passwsyncd [--help | --version]\n\
 Runs the local passwsync service on 127.0.0.1 in the foreground until SIGTERM, SIGINT or SIGHUP.\n\
@@ -281,13 +280,30 @@ fn start_with(deps: Deps, stopper: Stopper, with_signals: bool) -> Result<Runnin
         .local_addr()
         .map_err(|_| StartError::Fatal("listener address"))?;
 
-    // 5a/5b. Device identity and (if enabled) networking; never fatal.
-    let net = Arc::new(NetRuntime::start(
-        settings.network.clone(),
-        &paths,
+    // 5a-5e. Networking, sync, wallet service and sharing (host-runtime, shared with the
+    // Android app); never fatal.
+    let HostCore {
+        service,
         net,
+        sync,
+        share,
+    } = HostCore::assemble(
+        &HostDirs {
+            wallets: paths.wallets_dir.clone(),
+            sync: paths.sync_dir.clone(),
+            received: paths.received_dir.clone(),
+        },
+        &settings,
+        &paths::FileIdentity(&paths),
+        net,
+        ServiceConfig {
+            device,
+            wallet_kdf,
+            auto_lock: settings.auto_lock,
+        },
+        Arc::clone(&elapsed),
         &log,
-    ));
+    );
 
     // 6. Signal handling before the launch file exists, so a signal can never leave it behind.
     let signals = if with_signals {
@@ -298,50 +314,6 @@ fn start_with(deps: Deps, stopper: Stopper, with_signals: bool) -> Result<Runnin
     let sessions = Sessions::new().map_err(|_| StartError::Fatal("secure random source"))?;
     pages::write_launch_file(&paths.launch_file, settings.port, sessions.launch_token())
         .map_err(|_| StartError::Path(PathError::new(&paths.launch_file, "cannot be written")))?;
-    // 004: every save goes through the journaling directory (inactive with networking off).
-    // 005: one transfer limit for sync and share together; received wallets (step 5e).
-    let slots = wallet_sync::slots::TransferSlots::new(2);
-    let received = Arc::new(crate::share_store::FsReceivedStore::new(
-        paths.received_dir.clone(),
-    ));
-    let sync = Arc::new(SyncRuntime::new(
-        paths.sync_dir.clone(),
-        paths.wallets_dir.clone(),
-        received,
-        slots,
-        Arc::clone(&net),
-        log.clone(),
-        settings.sync_interval,
-    ));
-    let wallets: Arc<dyn WalletDirectory> = Arc::new(JournalingDirectory::new(
-        Arc::new(FsWalletDirectory::new(paths.wallets_dir.clone())),
-        sync.shared(),
-    ));
-    let service = Arc::new(Service::new(
-        wallets,
-        Arc::new(SystemClock),
-        Arc::clone(&elapsed),
-        ServiceConfig {
-            device,
-            wallet_kdf,
-            auto_lock: settings.auto_lock,
-        },
-    ));
-    sync.attach(&service);
-    // 5c/5d: sync only while networking is on (FR-001).
-    if net.settings.enabled && net.key_held() {
-        sync.start();
-    }
-    let share = Arc::new(crate::share_runtime::ShareRuntime::new(
-        sync.shared(),
-        Arc::clone(&service),
-        Arc::clone(&net),
-        log.clone(),
-    ));
-    // 005: every lock cause cancels an invitation for that wallet (FR-009a).
-    service.set_lock_observer(share.lock_observer());
-    // 5e. Received wallets: clean-up of partial and inconsistent files (never fatal).
-    share.startup_cleanup();
     let state = Arc::new(AppState {
         port: settings.port,
         settings,
@@ -362,12 +334,13 @@ fn start_with(deps: Deps, stopper: Stopper, with_signals: bool) -> Result<Runnin
         Arc::clone(&state.elapsed),
         stopper.clone(),
         {
-            let net = Arc::clone(&state.net);
-            let share = Arc::clone(&state.share);
-            Box::new(move |now| {
-                net.tick(now);
-                share.tick();
-            })
+            let core = HostCore {
+                service: Arc::clone(&state.service),
+                net: Arc::clone(&state.net),
+                sync: Arc::clone(&state.sync),
+                share: Arc::clone(&state.share),
+            };
+            Box::new(move |now| core.tick(now))
         },
     )
     .map_err(|_| {

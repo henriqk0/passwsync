@@ -1,0 +1,5 @@
+# Global bindgen config (uniffi 0.32 `--config` format): tells library mode where the
+# passwsync-ffi crate root is, so its uniffi.toml (Kotlin package, cdylib name) is applied
+# without a `cargo metadata` call.
+[crate-roots]
+passwsync_ffi = "../../crates/passwsync-ffi"

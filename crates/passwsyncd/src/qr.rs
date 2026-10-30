@@ -3,11 +3,8 @@
 
 use std::fmt::Write as _;
 use std::net::SocketAddrV4;
-use std::time::Duration;
 
-use device_link::code::PairingCode;
 use qrcodegen::{QrCode, QrCodeEcc};
-use rand_core::OsRng;
 use zeroize::Zeroizing;
 
 /// Quiet zone in modules on each side.
@@ -42,12 +39,10 @@ pub fn svg_path(text: &str) -> Option<QrSvg> {
     })
 }
 
-/// 005: a new 8-digit invite code from the OS CSPRNG through the reviewed 003 generator
-/// (uniform rejection sampling, wiped on drop). Validity is enforced by the share engine.
-pub fn new_invite_code() -> Option<Zeroizing<String>> {
-    let code = PairingCode::generate(&mut OsRng, Duration::ZERO).ok()?;
-    Some(Zeroizing::new(code.digits().to_owned()))
-}
+/// 005: the 8-digit invite code generator moved to `host_runtime::share_runtime` (007,
+/// FR-004) and is re-exported here; it still draws from the OS CSPRNG through the reviewed 003
+/// generator `PairingCode::generate` (uniform rejection sampling, wiped on drop).
+pub use host_runtime::share_runtime::new_invite_code;
 
 /// `1234 5678`.
 pub fn group_code(digits: &str) -> String {

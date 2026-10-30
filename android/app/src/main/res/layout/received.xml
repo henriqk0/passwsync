@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:fillViewport="true">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="16dp">
+
+        <TextView
+            android:id="@+id/received_title"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:accessibilityHeading="true"
+            android:text="@string/received_title"
+            android:textAppearance="?android:attr/textAppearanceLarge" />
+
+        <TextView
+            android:id="@+id/received_empty"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:paddingTop="8dp"
+            android:text="@string/received_empty" />
+
+        <LinearLayout
+            android:id="@+id/received_list"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical" />
+
+        <EditText
+            android:id="@+id/received_local_name"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="@string/received_local_name_hint"
+            android:inputType="text|textNoSuggestions"
+            android:importantForAutofill="no" />
+
+        <EditText
+            android:id="@+id/received_password"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="@string/master_password"
+            android:inputType="textPassword|textNoSuggestions"
+            android:imeOptions="actionDone|flagNoPersonalizedLearning"
+            android:importantForAutofill="noExcludeDescendants" />
+
+        <Button
+            android:id="@+id/open_received_button"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/open_received" />
+
+        <Button
+            android:id="@+id/discard_received_button"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/discard_received" />
+
+        <TextView
+            android:id="@+id/error"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:paddingTop="8dp"
+            android:accessibilityLiveRegion="polite"
+            android:textColor="?android:attr/colorError" />
+    </LinearLayout>
+</ScrollView>

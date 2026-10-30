@@ -1,0 +1,39 @@
+[package]
+name = "host-runtime"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Runtimes shared by the passwsync hosts (desktop service and Android app): logging, config, files, networking, sync and sharing"
+
+[lints]
+workspace = true
+
+[features]
+testkit = [
+    "wallet-service/testkit",
+    "vault-core/testkit",
+    "device-link/testkit",
+    "device-link-net/testkit",
+    "wallet-sync/testkit",
+]
+
+[dependencies]
+wallet-service = { path = "../wallet-service" }
+vault-core = { path = "../vault-core" }
+vault-storage-file = { path = "../vault-storage-file" }
+device-link = { path = "../device-link" }
+device-link-net = { path = "../device-link-net" }
+wallet-sync = { path = "../wallet-sync" }
+rustix = { workspace = true }
+rand_core = { version = "0.6", features = ["getrandom"] }
+sha2 = { workspace = true }
+zeroize = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+host-runtime = { path = ".", features = ["testkit"] }
+wallet-service = { path = "../wallet-service", features = ["testkit"] }
+vault-core = { path = "../vault-core", features = ["testkit"] }
+device-link = { path = "../device-link", features = ["testkit"] }
+device-link-net = { path = "../device-link-net", features = ["testkit"] }
+wallet-sync = { path = "../wallet-sync", features = ["testkit"] }

@@ -1,0 +1,23 @@
+# Fixture inventory (Type::method, snake_case as in crates/passwsync-ffi/tests/api_inventory.txt).
+KeySealer::seal
+KeySealer::open
+KeySealer::reset
+Clipboard::set_sensitive
+Clipboard::clear_if_ours
+LogSink::line
+UiNotifier::changed
+PasswsyncCore::start
+PasswsyncCore::create_wallet
+PasswsyncCore::unlock_wallet
+PasswsyncCore::change_password
+PasswsyncCore::add_credential
+PasswsyncCore::reveal_password
+PasswsyncCore::search
+PasswsyncCore::get_credential
+PasswsyncCore::join_pairing
+PasswsyncCore::pairing
+PasswsyncCore::redeem_invitation
+PasswsyncCore::invitation
+PasswsyncCore::open_received
+PasswsyncCore::open_pending_with_password
+PasswsyncCore::multicast_wanted

@@ -13,6 +13,7 @@ vault-storage-file = { path = "../vault-storage-file" }
 device-link = { path = "../device-link" }
 device-link-net = { path = "../device-link-net" }
 wallet-sync = { path = "../wallet-sync" }
+host-runtime = { path = "../host-runtime" }
 qrcodegen = { workspace = true }
 rustix = { workspace = true }
 httparse = { workspace = true }

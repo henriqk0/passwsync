@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- X7: a platform DeviceDefault theme; the window preview is the theme background only, and
+     FLAG_SECURE is set by SecureActivity before any content view exists. -->
+<resources>
+    <style name="Theme.Passwsync" parent="android:Theme.DeviceDefault.DayNight">
+        <item name="android:windowActionBar">true</item>
+    </style>
+</resources>
