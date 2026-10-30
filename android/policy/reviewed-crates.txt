@@ -1,0 +1,42 @@
+# Packages added to Cargo.lock relative to `main`, one `name version` per line, each
+# reviewed (research R1). Checked by the android/verify.sh `lock-diff` step (X8).
+#
+# Reviewed 2026-10-30 (007 T133). All are build-time or FFI-runtime crates of the pinned
+# UniFFI 0.32.2 set (`uniffi` with default features off) plus the two new workspace crates;
+# none opens a socket, resolves a name, speaks TLS or runs an async executor (FR-040; the
+# cargo-deny bans run on the same tree). Workspace crates: host-runtime (moved passwsyncd
+# runtimes), passwsync-ffi (the app library). UniFFI runtime and proc-macro crates: uniffi,
+# uniffi_core, uniffi_macros, uniffi_internal_macros, uniffi_meta, uniffi_pipeline. Their
+# support crates: anyhow (errors in generated scaffolding), bytes (buffer type of the FFI
+# lowering), static_assertions, once_cell, heck (name casing in macros), camino, fs-err,
+# tempfile, fastrand (macro-time metadata files), toml, toml_datetime, toml_parser,
+# toml_writer, serde_spanned, winnow (uniffi.toml parsing at macro time), indexmap,
+# hashbrown, equivalent (ordered maps), siphasher (checksums), autocfg (build script).
+anyhow 1.0.104
+autocfg 1.5.1
+bytes 1.12.1
+camino 1.2.6
+equivalent 1.0.3
+fastrand 2.5.0
+fs-err 3.3.2
+hashbrown 0.17.1
+heck 0.5.0
+host-runtime 0.1.0
+indexmap 2.14.2
+once_cell 1.21.4
+passwsync-ffi 0.1.0
+serde_spanned 1.1.2
+siphasher 1.0.4
+static_assertions 1.1.0
+tempfile 3.27.0
+toml 1.1.8+spec-1.1.0
+toml_datetime 1.1.2+spec-1.1.0
+toml_parser 1.1.5+spec-1.1.0
+toml_writer 1.1.3+spec-1.1.0
+uniffi 0.32.2
+uniffi_core 0.32.2
+uniffi_internal_macros 0.32.2
+uniffi_macros 0.32.2
+uniffi_meta 0.32.2
+uniffi_pipeline 0.32.2
+winnow 1.0.4

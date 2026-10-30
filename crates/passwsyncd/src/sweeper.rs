@@ -10,32 +10,16 @@ use std::time::Duration;
 use wallet_service::{ElapsedClock, Service};
 
 use crate::app::Stopper;
-use crate::log::{LockReason, Log, LogEvent, Rejections};
+use crate::log::{Log, Rejections};
 
 pub const SWEEP_INTERVAL: Duration = Duration::from_secs(15);
 
 /// Locks everything if a suspend is detected, logging it. Also runs before every request.
-pub fn lock_if_suspended(service: &Service, log: &Log) {
-    if let Some(locked) = service.check_suspend() {
-        log.emit(&LogEvent::SuspendDetected);
-        for wallet in &locked {
-            log.emit(&LogEvent::Locked {
-                wallet,
-                reason: LockReason::Suspend,
-            });
-        }
-    }
-}
+pub use host_runtime::wiring::lock_if_suspended;
 
 /// One sweep: suspend check, idle locks, rejection summary.
 pub fn tick(service: &Service, rejections: &Rejections, log: &Log, clock: &dyn ElapsedClock) {
-    lock_if_suspended(service, log);
-    for wallet in &service.sweep() {
-        log.emit(&LogEvent::Locked {
-            wallet,
-            reason: LockReason::Idle,
-        });
-    }
+    host_runtime::wiring::sweep_locks(service, log);
     if let Some(line) = rejections.flush(clock.monotonic()) {
         log.emit(&line);
     }

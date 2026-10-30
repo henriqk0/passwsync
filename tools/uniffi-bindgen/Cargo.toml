@@ -1,0 +1,24 @@
+# Kotlin binding generator for crates/passwsync-ffi (research R1). A separate workspace with
+# its own Cargo.lock, so the generator's CLI dependencies never enter the root lock that the
+# desktop service and the app library are built from.
+[package]
+name = "uniffi-bindgen"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MPL-2.0"
+publish = false
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/main.rs"
+
+[dependencies]
+# No `cargo-metadata` (default feature): library mode reads crates/passwsync-ffi/uniffi.toml
+# through `--config`, and the tool needs no `cargo metadata` call.
+uniffi = { version = "=0.32.2", default-features = false, features = ["cli"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[workspace]

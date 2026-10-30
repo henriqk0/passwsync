@@ -35,3 +35,13 @@ go.work.sum
 # Rust
 /target
 **/*.rs.bk
+/tools/uniffi-bindgen/target
+
+# Android (007): Gradle/IDE outputs and local SDK paths
+/android/.gradle
+/android/build
+/android/app/build
+/android/local.properties
+
+# Python bytecode of android/policy
+__pycache__/

@@ -103,6 +103,21 @@ impl Scheduler {
         self.peers.entry(peer).or_default().legacy = legacy;
     }
 
+    /// 007 (FR-045): whether a round with an eligible peer is still wanted (due now or later,
+    /// or waiting for the quiet period after a save). Rounds already taken by [`Self::due`]
+    /// are not counted; the host tracks running rounds itself.
+    pub fn queued(&self) -> bool {
+        let eligible = self.peers.values().filter(|p| Self::eligible(p));
+        let mut any = false;
+        for p in eligible {
+            any = true;
+            if p.due_at.is_some() {
+                return true;
+            }
+        }
+        any && self.dirty_since.is_some()
+    }
+
     /// (b) A wallet was saved locally: after the quiet period, rounds with every peer.
     pub fn wallet_saved(&mut self, now: Duration) {
         self.dirty_since.get_or_insert(now);

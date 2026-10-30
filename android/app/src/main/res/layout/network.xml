@@ -1,0 +1,84 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:fillViewport="true">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="16dp">
+
+        <TextView
+            android:id="@+id/network_title"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:accessibilityHeading="true"
+            android:text="@string/network_title"
+            android:textAppearance="?android:attr/textAppearanceLarge" />
+
+        <TextView
+            android:id="@+id/network_state"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:paddingTop="8dp" />
+
+        <TextView
+            android:id="@+id/this_device"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:paddingTop="8dp" />
+
+        <TextView
+            android:id="@+id/no_local_network_text"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:paddingTop="8dp"
+            android:text="@string/no_local_network" />
+
+        <Button
+            android:id="@+id/networking_on_button"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/networking_on" />
+
+        <Button
+            android:id="@+id/networking_off_button"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/networking_off" />
+
+        <TextView
+            android:id="@+id/networking_restart"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:paddingTop="8dp" />
+
+        <Button
+            android:id="@+id/devices_button"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/devices" />
+
+        <Button
+            android:id="@+id/pairing_button"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/pair_device" />
+
+        <Button
+            android:id="@+id/reset_identity_button"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="@string/reset_identity" />
+
+        <TextView
+            android:id="@+id/error"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:paddingTop="8dp"
+            android:accessibilityLiveRegion="polite"
+            android:textColor="?android:attr/colorError" />
+    </LinearLayout>
+</ScrollView>
