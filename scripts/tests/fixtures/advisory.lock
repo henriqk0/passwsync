@@ -1,0 +1,10 @@
+# Fixture for the gate's `policy` step (008 T066, research R19): a lock file naming one
+# crate version with a long-standing, non-withdrawn RustSec advisory (RUSTSEC-2021-0003,
+# smallvec 1.6.0 `insert_many` buffer overflow). `cargo audit --no-fetch --file` on it MUST
+# fail; if it ever passes, the advisory database or the audit invocation is broken.
+version = 3
+
+[[package]]
+name = "smallvec"
+version = "1.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"

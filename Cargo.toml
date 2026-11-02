@@ -9,8 +9,9 @@ members = [
     "crates/wallet-sync",
     "crates/host-runtime",
     "crates/passwsync-ffi",
+    "crates/hardening",
 ]
-exclude = ["tools/uniffi-bindgen"]
+exclude = ["tools/uniffi-bindgen", "fuzz"]
 resolver = "3"
 
 [workspace.package]

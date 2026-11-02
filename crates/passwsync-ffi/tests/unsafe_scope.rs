@@ -1,6 +1,7 @@
-//! FR-005: the single unsafe module. Every `*.rs` under `crates/*/src/` is scanned after
-//! stripping comments and string/char literals; `unsafe` or `allow(unsafe_code)` may appear
-//! only in `crates/passwsync-ffi/src/memprotect.rs`.
+//! FR-005: the single unsafe module. Every `*.rs` under `crates/*/{src,tests,benches}/` and the
+//! optional `fuzz/` workspace (008 FR-037) is scanned after stripping comments and string/char
+//! literals; `unsafe` or `allow(unsafe_code)` may appear only in
+//! `crates/passwsync-ffi/src/memprotect.rs`.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -158,27 +159,51 @@ fn the_stripper_removes_comments_and_literals() {
     assert!(!has_word("unsafe_code", "unsafe"));
 }
 
+/// `crates/*/{src,tests,benches}` and `fuzz/` under `workspace` (sorted).
+fn scan_roots(workspace: &Path) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    if let Ok(entries) = fs::read_dir(workspace.join("crates")) {
+        for entry in entries {
+            let dir = entry.unwrap().path();
+            for sub in ["src", "tests", "benches"] {
+                roots.push(dir.join(sub));
+            }
+        }
+    }
+    roots.push(workspace.join("fuzz"));
+    roots.sort();
+    roots
+}
+
+/// Files under the scan roots of `workspace` that contain `unsafe` or `allow(unsafe_code)`
+/// in code (comments and literals stripped), except `allowed`.
+fn offenders(workspace: &Path, allowed: &Path) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    for root in scan_roots(workspace) {
+        rust_files(&root, &mut files);
+    }
+    files
+        .into_iter()
+        .filter(|file| file != allowed)
+        .filter(|file| {
+            let code = strip(&fs::read_to_string(file).unwrap());
+            has_word(&code, "unsafe") || code.replace(' ', "").contains("allow(unsafe_code)")
+        })
+        .collect()
+}
+
 #[test]
 fn unsafe_appears_only_in_memprotect() {
+    let workspace = crates_dir().parent().unwrap().to_path_buf();
     let allowed = crates_dir().join("passwsync-ffi/src/memprotect.rs");
     let mut files = Vec::new();
-    for entry in fs::read_dir(crates_dir()).unwrap() {
-        rust_files(&entry.unwrap().path().join("src"), &mut files);
+    for root in scan_roots(&workspace) {
+        rust_files(&root, &mut files);
     }
-    assert!(files.len() > 50, "sources found: {}", files.len());
+    assert!(files.len() > 200, "sources found: {}", files.len());
     assert!(allowed.is_file(), "memprotect.rs must exist");
-    for file in files {
-        let code = strip(&fs::read_to_string(&file).unwrap());
-        if file == allowed {
-            continue;
-        }
-        assert!(!has_word(&code, "unsafe"), "unsafe in {}", file.display());
-        assert!(
-            !code.replace(' ', "").contains("allow(unsafe_code)"),
-            "allow(unsafe_code) in {}",
-            file.display()
-        );
-    }
+    let found = offenders(&workspace, &allowed);
+    assert!(found.is_empty(), "unsafe outside memprotect.rs: {found:?}");
 }
 
 #[test]
@@ -231,4 +256,48 @@ fn every_other_member_uses_the_workspace_lints() {
     }
     let root = fs::read_to_string(crates_dir().parent().unwrap().join("Cargo.toml")).unwrap();
     assert!(root.contains("[workspace.lints.rust]\nunsafe_code = \"forbid\""));
+}
+
+// --- 008 T064: the scan covers tests, benches and the optional fuzz workspace too ----------
+
+#[test]
+fn the_widened_scan_reports_unsafe_in_tests_benches_and_fuzz() {
+    let root = std::env::temp_dir().join(format!("passwsync-unsafe-scan-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    let token = ["un", "safe"].concat();
+    for rel in [
+        "crates/x/src/lib.rs",
+        "crates/x/tests/a.rs",
+        "crates/x/benches/b.rs",
+        "fuzz/fuzz_targets/c.rs",
+    ] {
+        let path = root.join(rel);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let body = if rel.ends_with("lib.rs") {
+            "pub fn f() {}\n".to_owned()
+        } else {
+            format!("fn f() {{ {token} {{ }} }}\n")
+        };
+        fs::write(&path, body).unwrap();
+    }
+    let found = offenders(&root, &root.join("crates/x/src/none.rs"));
+    let _ = fs::remove_dir_all(&root);
+    let mut names: Vec<String> = found
+        .iter()
+        .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    assert_eq!(names, ["a.rs", "b.rs", "c.rs"]);
+}
+
+#[test]
+fn the_real_scan_roots_include_the_hardening_crate_and_fuzz() {
+    let workspace = crates_dir().parent().unwrap().to_path_buf();
+    let roots = scan_roots(&workspace);
+    for want in ["crates/hardening/src", "crates/hardening/tests", "fuzz"] {
+        assert!(
+            roots.contains(&workspace.join(want)),
+            "scan roots miss {want}: {roots:?}"
+        );
+    }
 }

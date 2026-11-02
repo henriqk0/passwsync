@@ -54,5 +54,12 @@ pub use storage::{MemoryStorage, SaveMeta, VaultStorage};
 pub use vault::Vault;
 pub use version::{VersionOrdering, VersionVector};
 
+/// Smallest wallet file: 63-byte header plus the 16-byte tag (008 B-20, read-only).
+pub const MIN_WALLET_FILE: usize = format::MIN_FILE_LEN;
+/// Largest wallet file accepted or written (008 B-20, read-only).
+pub const MAX_WALLET_FILE: usize = format::MAX_FILE_LEN;
+/// Largest text field of a credential in bytes (008 B-20, read-only).
+pub const MAX_FIELD_BYTES: usize = entry::MAX_FIELD_LEN;
+
 /// Unix seconds, UTC.
 pub type Timestamp = i64;

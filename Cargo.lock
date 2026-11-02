@@ -362,6 +362,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "hardening"
+version = "0.1.0"
+dependencies = [
+ "device-link",
+ "device-link-net",
+ "host-runtime",
+ "passwsync-ffi",
+ "passwsyncd",
+ "vault-core",
+ "vault-storage-file",
+ "wallet-service",
+ "wallet-sync",
+]
+
+[[package]]
 name = "hash32"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -1,0 +1,149 @@
+# Optional coverage-guided fuzzing with cargo-fuzz (008 FR-009, research R12).
+# UNVERIFIED and NEVER BUILT by any gate: nightly Rust and libfuzzer-sys are not available on
+# the development host, and no lock file is committed. Its own workspace (the root
+# Cargo.toml excludes "fuzz"). Read README.md before first use.
+[package]
+name = "passwsync-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[workspace]
+
+[dependencies]
+# Version recorded, UNVERIFIED (not in the local crate cache; must pass cargo deny and
+# cargo audit before first use).
+libfuzzer-sys = "=0.4.10"
+hardening = { path = "../crates/hardening" }
+vault-core = { path = "../crates/vault-core", features = ["testkit"] }
+vault-storage-file = { path = "../crates/vault-storage-file" }
+wallet-service = { path = "../crates/wallet-service", features = ["testkit"] }
+device-link = { path = "../crates/device-link", features = ["testkit"] }
+device-link-net = { path = "../crates/device-link-net", features = ["testkit"] }
+wallet-sync = { path = "../crates/wallet-sync", features = ["testkit"] }
+host-runtime = { path = "../crates/host-runtime", features = ["testkit"] }
+passwsyncd = { path = "../crates/passwsyncd" }
+passwsync-ffi = { path = "../crates/passwsync-ffi", features = ["testkit"] }
+
+
+[[bin]]
+name = "wallet_header"
+path = "fuzz_targets/wallet_header.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "wallet_payload"
+path = "fuzz_targets/wallet_payload.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "wallet_unlock"
+path = "fuzz_targets/wallet_unlock.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "frame"
+path = "fuzz_targets/frame.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "hello"
+path = "fuzz_targets/hello.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "channel_payload"
+path = "fuzz_targets/channel_payload.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "discovery"
+path = "fuzz_targets/discovery.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "pairing_initiator"
+path = "fuzz_targets/pairing_initiator.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "pairing_joiner"
+path = "fuzz_targets/pairing_joiner.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "channel_responder"
+path = "fuzz_targets/channel_responder.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "channel_dialer"
+path = "fuzz_targets/channel_dialer.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sync_ctl"
+path = "fuzz_targets/sync_ctl.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sync_reassembly"
+path = "fuzz_targets/sync_reassembly.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sync_copy"
+path = "fuzz_targets/sync_copy.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "share_msg"
+path = "fuzz_targets/share_msg.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "http_request"
+path = "fuzz_targets/http_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ffi_args"
+path = "fuzz_targets/ffi_args.rs"
+test = false
+doc = false
+bench = false

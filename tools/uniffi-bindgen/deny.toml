@@ -1,6 +1,11 @@
 # Policy for the binding generator's own lock (build tool, never shipped; research R1).
 [advisories]
 version = 2
+# 008 (research R18): every advisory kind fails. cargo-audit runs with `--deny warnings` and
+# the same ignore list, read from this file by scripts/gate.sh (FR-036).
+yanked = "deny"
+unmaintained = "all"
+unsound = "all"
 ignore = [
     # Unmaintained notice only (no vulnerability) for `basic-toml`, reached through
     # `askama_derive` of UniFFI's Kotlin templates. Build-time only: the generator runs on the

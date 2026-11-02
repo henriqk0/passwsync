@@ -1,0 +1,28 @@
+[package]
+name = "hardening"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "Test-only, std-only fuzz engine and hardening checks for passwsync (008)"
+
+# Deliberately empty (008 FR-001, FR-037, amendment A1): the engine is std only and no
+# product crate depends on this package.
+[dependencies]
+
+# Product crates are reached only from the integration tests, with their `testkit` features,
+# so `testkit` never reaches a release build (research R1).
+[dev-dependencies]
+vault-core = { path = "../vault-core", features = ["testkit"] }
+vault-storage-file = { path = "../vault-storage-file" }
+wallet-service = { path = "../wallet-service", features = ["testkit"] }
+device-link = { path = "../device-link", features = ["testkit"] }
+device-link-net = { path = "../device-link-net", features = ["testkit"] }
+wallet-sync = { path = "../wallet-sync", features = ["testkit"] }
+host-runtime = { path = "../host-runtime", features = ["testkit"] }
+passwsyncd = { path = "../passwsyncd" }
+passwsync-ffi = { path = "../passwsync-ffi", features = ["testkit"] }
+
+[lints]
+workspace = true

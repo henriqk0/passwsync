@@ -1,0 +1,7 @@
+# Fixture workspace for the gate's `policy` step (008 T066, research R19): path packages only
+# (no network). `tokio` is named like a `[bans] deny` entry and `gpl-crate` carries a license
+# outside the allow list, so `cargo deny --offline check bans licenses` with the repository
+# policy (deny.toml, a copy checked equal by the gate) MUST fail.
+[workspace]
+members = ["tokio", "gpl-crate"]
+resolver = "3"

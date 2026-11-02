@@ -1,0 +1,11 @@
+--- a/crates/vault-core/src/format.rs
++++ b/crates/vault-core/src/format.rs
+@@ -48,7 +48,7 @@
+ 
+     /// Checks 1-4 of the parse order; runs before any key derivation.
+     pub fn parse(bytes: &[u8]) -> Result<Self, VaultError> {
+-        if !(MIN_FILE_LEN..=MAX_FILE_LEN).contains(&bytes.len()) || &bytes[0..4] != MAGIC {
++        if bytes.len() < HEADER_LEN || &bytes[0..4] != MAGIC {
+             return Err(VaultError::MalformedFile);
+         }
+         let version = u16::from_le_bytes([bytes[4], bytes[5]]);

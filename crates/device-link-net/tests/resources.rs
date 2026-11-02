@@ -73,6 +73,21 @@ fn idle_with_five_peers_stays_within_budget() {
     let woke = a.node.wakes() - wakes;
     let rss_delta = rss_kib().saturating_sub(baseline);
     eprintln!("cpu {cpu:.4} wakes {woke} rss +{rss_delta} KiB (6 nodes in process)");
+    // 008 (contracts/benchmarks.md): numbers only; collected by scripts/bench.sh.
+    let cpu_percent = cpu * 100.0;
+    // Peer wake-ups only: one discovery tick per 30 s period is budgeted separately (see the
+    // assertion below).
+    let periods_f = window.as_secs_f64() / 30.0;
+    let per_peer_per_30s = (woke as f64 - periods_f.ceil()).max(0.0) / 5.0 / periods_f;
+    let verdict = |ok: bool| if ok { "PASS" } else { "OVER" };
+    println!(
+        "BUDGET id=B-11 value={cpu_percent:.3} unit=% limit=1 cmp=lt source=003-SC-007 class=measured verdict={}",
+        verdict(cpu_percent < 1.0)
+    );
+    println!(
+        "BUDGET id=B-12 value={per_peer_per_30s:.3} unit=count limit=1 cmp=le source=003-SC-007 class=measured verdict={}",
+        verdict(per_peer_per_30s <= 1.0)
+    );
     assert!(cpu < 0.01, "CPU {cpu}");
     // <= 1 wake per 30 s per peer on average, plus the discovery tick.
     let periods = window.as_secs() / 30 + 1;

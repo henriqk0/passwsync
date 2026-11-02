@@ -1,0 +1,33 @@
+[advisories]
+version = 2
+# 008 (research R18): every advisory kind fails. cargo-audit runs with `--deny warnings` and
+# the same ignore list, read from this file by scripts/gate.sh (FR-036).
+yanked = "deny"
+unmaintained = "all"
+unsound = "all"
+ignore = [
+    # Unmaintained notice only (no vulnerability). Pulled in by postcard -> heapless 0.7; it
+    # only provides atomics for targets that lack them, which x86_64 and aarch64 do not.
+    # Revisit when postcard moves to a newer heapless.
+    { id = "RUSTSEC-2023-0089", reason = "unmaintained, no vulnerability; inactive on our targets" },
+]
+
+[licenses]
+version = 2
+allow = ["MIT", "Apache-2.0", "Apache-2.0 WITH LLVM-exception", "Unicode-3.0", "Unicode-DFS-2016", "MPL-2.0", "BSD-3-Clause", "ISC", "Zlib"]
+
+[bans]
+multiple-versions = "warn"
+# 007 (FR-040): no HTTP client, DNS resolver, TLS stack, async runtime or telemetry crate may
+# enter the tree of the desktop service or the app library.
+deny = [
+  { name = "reqwest" }, { name = "hyper" }, { name = "ureq" }, { name = "curl" },
+  { name = "isahc" }, { name = "attohttpc" }, { name = "surf" }, { name = "h2" },
+  { name = "trust-dns-resolver" }, { name = "hickory-resolver" }, { name = "native-tls" },
+  { name = "openssl" }, { name = "openssl-sys" }, { name = "rustls" }, { name = "tokio" },
+  { name = "sentry" }, { name = "opentelemetry" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
