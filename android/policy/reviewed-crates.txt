@@ -18,4 +18,3 @@
 # New in 008: the in-tree, test-only path package `hardening` (empty [dependencies], dev-
 # dependencies on workspace crates only; never linked into a release build, checked by the
 # gate step `release-isolation`). No third-party package is added (amendment A1).
-hardening 0.1.0
