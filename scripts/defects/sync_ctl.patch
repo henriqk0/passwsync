@@ -1,0 +1,12 @@
+--- a/crates/wallet-sync/src/codec.rs
++++ b/crates/wallet-sync/src/codec.rs
+@@ -279,9 +279,6 @@
+     let ctl = match ctype {
+         0x01 => {
+             let n = usize::from(r.u16()?);
+-            if n > MAX_TAGS {
+-                return Err(ProtocolError);
+-            }
+             let mut entries = Vec::with_capacity(n);
+             for _ in 0..n {
+                 entries.push((r.array16()?, r.array16()?));

@@ -76,6 +76,10 @@ pub fn read_request(stream: &mut impl Read) -> Result<Request, RequestError> {
         let mut parsed = httparse::Request::new(&mut headers);
         match parsed.parse(&head[..filled]) {
             Ok(httparse::Status::Complete(head_len)) => {
+                // 008 F-001: httparse also takes a bare LF as a line end; only CRLF is HTTP.
+                if bare_lf(&head[..head_len]) {
+                    return Err(RequestError::BadRequest);
+                }
                 return finish(&parsed, &head[head_len..filled], stream);
             }
             Ok(httparse::Status::Partial) if filled == MAX_HEAD_BYTES => {
@@ -86,6 +90,13 @@ pub fn read_request(stream: &mut impl Read) -> Result<Request, RequestError> {
             Err(_) => return Err(RequestError::BadRequest),
         }
     }
+}
+
+/// Whether `head` has an LF not preceded by CR.
+fn bare_lf(head: &[u8]) -> bool {
+    head.iter()
+        .enumerate()
+        .any(|(i, &b)| b == b'\n' && (i == 0 || head[i - 1] != b'\r'))
 }
 
 fn finish(

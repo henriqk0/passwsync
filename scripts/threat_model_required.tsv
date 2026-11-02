@@ -1,0 +1,22 @@
+# Required residual-risk register entries of docs/threat-model.md (008 contracts/threat-model-structure.md).
+# Tab-separated: rr_id, source_path, anchor_phrase (must occur in source_path), flag (pending or empty).
+# Checked by scripts/check_threat_model.py (TM9, TM10). Removing a row needs a change-log entry.
+RR-01	specs/003-device-identity-pairing/research.md	without zeroize	
+RR-02	specs/003-device-identity-pairing/spec.md	protected by owner-only file permissions	
+RR-03	specs/003-device-identity-pairing/spec.md	reveal a stable device ID to anyone on the same LAN	
+RR-04	specs/004-wallet-sync-protocol/plan.md	undetected restore	
+RR-05	specs/004-wallet-sync-protocol/plan.md	No MAC on the sync record	
+RR-06	specs/005-wallet-sharing/plan.md	Duplicate detection limited	
+RR-07	specs/005-wallet-sharing/plan.md	can invalidate an invitation	
+RR-08	specs/005-wallet-sharing/plan.md	an already delivered copy cannot be withdrawn	
+RR-09	specs/002-local-service-web-ui/spec.md	clearing cannot be guaranteed	
+RR-10	specs/006-aur-packaging-service/plan.md	Accepted residuals	
+RR-11	specs/007-android-app/plan.md	JVM copies of secrets	pending
+RR-12	specs/007-android-app/spec.md	Screen-reader access	
+RR-13	specs/007-android-app/plan.md	memory locked full/secrets-only with status	
+RR-14	specs/007-android-app/plan.md	non-secret records stored in plaintext	pending
+RR-15	specs/007-android-app/plan.md	Constitution III exception	pending
+RR-16	deny.toml	RUSTSEC-2023-0089	
+RR-17	tools/uniffi-bindgen/deny.toml	RUSTSEC-2026-0374	
+RR-18	specs/008-hardening-audit/research.md	runner VM image	
+RR-19	specs/008-hardening-audit/research.md	duplicate count	

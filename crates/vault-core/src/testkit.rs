@@ -108,6 +108,33 @@ pub fn seal_payload(
     .expect("seal")
 }
 
+/// As [`seal_payload`] with a fixed salt and nonce: identical inputs give identical bytes
+/// (008 deterministic fuzz seeds). Test-only; a real wallet never reuses a nonce.
+pub fn seal_payload_with(
+    password: &str,
+    kdf: crate::KdfConfig,
+    version: u16,
+    plaintext: &[u8],
+    salt: [u8; 32],
+    nonce: [u8; 12],
+) -> Vec<u8> {
+    let key = crate::kdf::derive_key(
+        &crate::MasterPassword::new(password.to_string()),
+        &kdf,
+        &salt,
+    )
+    .expect("key derivation");
+    crate::format::seal_plaintext_with_nonce(
+        &key,
+        version,
+        kdf,
+        &salt,
+        nonce,
+        zeroize::Zeroizing::new(plaintext.to_vec()),
+    )
+    .expect("seal")
+}
+
 /// A second in-memory holder of the same wallet: same key, entries and state, another
 /// device id and a fixed clock at `now`. No key derivation (fast property tests).
 pub fn fork(vault: &crate::Vault, device: &str, now: crate::Timestamp) -> crate::Vault {
@@ -155,4 +182,134 @@ pub fn with_state_counter(vault: &crate::Vault, device: &str, counter: u64) -> c
     }
     copy.state = crate::StateVector::from_pairs(pairs).expect("state");
     copy
+}
+
+// --- 008: fuzz entry points (research R7). They call the production decoder. --------------
+
+/// A decoded wallet payload, as `decode_payload` returns it.
+pub struct DecodedPayload {
+    pub wallet_id: crate::WalletId,
+    pub created_at: crate::Timestamp,
+    pub state: crate::StateVector,
+    pub password_epoch: crate::VersionVector,
+    pub entries: Vec<crate::Entry>,
+    /// Format version of the plaintext (1 or 2).
+    pub format: u16,
+}
+
+/// Runs exactly the post-decryption path of an unlock on `plaintext` of format `version`.
+pub fn decode_payload(version: u16, plaintext: &[u8]) -> Result<DecodedPayload, crate::VaultError> {
+    let payload = crate::format::decode_plaintext(version, plaintext)?;
+    Ok(DecodedPayload {
+        wallet_id: payload.wallet_id,
+        created_at: payload.created_at,
+        state: payload.state,
+        password_epoch: payload.password_epoch,
+        entries: payload.entries,
+        format: payload.format,
+    })
+}
+
+/// The version 2 plaintext of `payload`, exactly as `Vault::seal` serializes it.
+pub fn encode_payload(payload: &DecodedPayload) -> Vec<u8> {
+    postcard::to_allocvec(&crate::format::PayloadRef {
+        wallet_id: payload.wallet_id,
+        created_at: payload.created_at,
+        state: &payload.state,
+        password_epoch: &payload.password_epoch,
+        entries: &payload.entries,
+    })
+    .expect("payload encodes")
+}
+
+#[derive(serde::Serialize)]
+enum StateV1<'a> {
+    Live(&'a crate::EntryFields),
+    Deleted { deleted_at: crate::Timestamp },
+}
+
+#[derive(serde::Serialize)]
+struct EntryV1Ref<'a> {
+    id: crate::EntryId,
+    created_at: crate::Timestamp,
+    modified_at: crate::Timestamp,
+    last_modified_by: &'a crate::DeviceId,
+    version: &'a crate::VersionVector,
+    state: StateV1<'a>,
+}
+
+#[derive(serde::Serialize)]
+struct PayloadV1Ref<'a> {
+    wallet_id: crate::WalletId,
+    created_at: crate::Timestamp,
+    entries: Vec<EntryV1Ref<'a>>,
+}
+
+/// The 001 (format version 1) plaintext of `payload`: current versions only.
+pub fn encode_payload_v1(payload: &DecodedPayload) -> Vec<u8> {
+    let entries = payload
+        .entries
+        .iter()
+        .map(|entry| EntryV1Ref {
+            id: entry.id(),
+            created_at: entry.created_at(),
+            modified_at: entry.modified_at(),
+            last_modified_by: entry.last_modified_by(),
+            version: entry.version(),
+            state: match (entry.fields(), entry.deleted_at()) {
+                (Some(fields), _) => StateV1::Live(fields),
+                (None, deleted_at) => StateV1::Deleted {
+                    deleted_at: deleted_at.unwrap_or_default(),
+                },
+            },
+        })
+        .collect();
+    postcard::to_allocvec(&PayloadV1Ref {
+        wallet_id: payload.wallet_id,
+        created_at: payload.created_at,
+        entries,
+    })
+    .expect("payload encodes")
+}
+
+/// The payload of an unlocked vault (copies, no encryption).
+pub fn payload_of(vault: &crate::Vault) -> DecodedPayload {
+    DecodedPayload {
+        wallet_id: vault.wallet_id,
+        created_at: vault.created_at,
+        state: vault.state.clone(),
+        password_epoch: vault.password_epoch.clone(),
+        entries: vault.entries.iter().map(crate::Entry::duplicate).collect(),
+        format: vault.format_loaded,
+    }
+}
+
+/// The plaintext header fields of a wallet file.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HeaderFields {
+    pub version: u16,
+    pub kdf: crate::KdfConfig,
+    pub salt: [u8; 32],
+    pub nonce: [u8; 12],
+}
+
+/// The production header checks (length, magic, version, KDF id and ranges).
+pub fn parse_header(bytes: &[u8]) -> Result<HeaderFields, crate::VaultError> {
+    crate::format::Header::parse(bytes).map(|header| HeaderFields {
+        version: header.version,
+        kdf: header.kdf,
+        salt: header.salt,
+        nonce: header.nonce,
+    })
+}
+
+/// The 63-byte header encoding.
+pub fn header_bytes(fields: &HeaderFields) -> [u8; 63] {
+    crate::format::Header {
+        version: fields.version,
+        kdf: fields.kdf,
+        salt: fields.salt,
+        nonce: fields.nonce,
+    }
+    .encode()
 }

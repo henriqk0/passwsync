@@ -12,31 +12,10 @@
 # tempfile, fastrand (macro-time metadata files), toml, toml_datetime, toml_parser,
 # toml_writer, serde_spanned, winnow (uniffi.toml parsing at macro time), indexmap,
 # hashbrown, equivalent (ordered maps), siphasher (checksums), autocfg (build script).
-anyhow 1.0.104
-autocfg 1.5.1
-bytes 1.12.1
-camino 1.2.6
-equivalent 1.0.3
-fastrand 2.5.0
-fs-err 3.3.2
-hashbrown 0.17.1
-heck 0.5.0
-host-runtime 0.1.0
-indexmap 2.14.2
-once_cell 1.21.4
-passwsync-ffi 0.1.0
-serde_spanned 1.1.2
-siphasher 1.0.4
-static_assertions 1.1.0
-tempfile 3.27.0
-toml 1.1.8+spec-1.1.0
-toml_datetime 1.1.2+spec-1.1.0
-toml_parser 1.1.5+spec-1.1.0
-toml_writer 1.1.3+spec-1.1.0
-uniffi 0.32.2
-uniffi_core 0.32.2
-uniffi_internal_macros 0.32.2
-uniffi_macros 0.32.2
-uniffi_meta 0.32.2
-uniffi_pipeline 0.32.2
-winnow 1.0.4
+#
+# 2026-11-02 (008 hardening audit): 007 is merged into `main`, so the 007 entries above are no
+# longer new relative to `main` and were removed (they stay reviewed in the 007 history).
+# New in 008: the in-tree, test-only path package `hardening` (empty [dependencies], dev-
+# dependencies on workspace crates only; never linked into a release build, checked by the
+# gate step `release-isolation`). No third-party package is added (amendment A1).
+hardening 0.1.0

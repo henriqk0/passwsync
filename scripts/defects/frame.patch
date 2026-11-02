@@ -1,0 +1,11 @@
+--- a/crates/device-link/src/wire.rs
++++ b/crates/device-link/src/wire.rs
+@@ -11,7 +11,7 @@
+ /// Validates a frame length header.
+ pub fn frame_len(header: [u8; 2]) -> Result<usize, Error> {
+     let len = usize::from(u16::from_be_bytes(header));
+-    if (1..=MAX_FRAME).contains(&len) {
++    if len <= usize::from(u16::MAX) {
+         Ok(len)
+     } else {
+         Err(Error::Protocol)

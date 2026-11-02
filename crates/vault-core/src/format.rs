@@ -20,8 +20,8 @@ const FORMAT_V1: u16 = 1;
 const KDF_ARGON2ID: u8 = 1;
 pub(crate) const HEADER_LEN: usize = 63;
 const TAG_LEN: usize = 16;
-const MIN_FILE_LEN: usize = HEADER_LEN + TAG_LEN;
-const MAX_FILE_LEN: usize = 64 * 1024 * 1024;
+pub(crate) const MIN_FILE_LEN: usize = HEADER_LEN + TAG_LEN;
+pub(crate) const MAX_FILE_LEN: usize = 64 * 1024 * 1024;
 
 /// Plaintext, authenticated file header (see contracts/file-format.md). Version 2 keeps the
 /// v1 layout; only the version field differs (no sync metadata in clear, research R2).
@@ -217,12 +217,25 @@ pub(crate) fn seal_plaintext(
     version: u16,
     kdf: KdfConfig,
     salt: &[u8; 32],
-    mut buffer: Zeroizing<Vec<u8>>,
+    buffer: Zeroizing<Vec<u8>>,
 ) -> Result<Vec<u8>, VaultError> {
     let mut nonce = [0u8; 12];
     OsRng
         .try_fill_bytes(&mut nonce)
         .map_err(|_| VaultError::Rng)?;
+    seal_plaintext_with_nonce(key, version, kdf, salt, nonce, buffer)
+}
+
+/// As [`seal_plaintext`] with a caller-chosen nonce (008: deterministic fuzz seeds through
+/// `testkit` only; production always draws a fresh nonce).
+pub(crate) fn seal_plaintext_with_nonce(
+    key: &VaultKey,
+    version: u16,
+    kdf: KdfConfig,
+    salt: &[u8; 32],
+    nonce: [u8; 12],
+    mut buffer: Zeroizing<Vec<u8>>,
+) -> Result<Vec<u8>, VaultError> {
     let header = Header {
         version,
         kdf,
@@ -245,7 +258,16 @@ pub(crate) fn open_with_key(
     header: &Header,
     key: &VaultKey,
 ) -> Result<Payload, VaultError> {
-    let corrupt = || VaultError::InvalidPasswordOrCorrupted;
+    let buffer = decrypt(bytes, header, key)?;
+    decode_plaintext(header.version, &buffer)
+}
+
+/// Authenticates and decrypts the body; the plaintext is wiped on drop.
+fn decrypt(
+    bytes: &[u8],
+    header: &Header,
+    key: &VaultKey,
+) -> Result<Zeroizing<Vec<u8>>, VaultError> {
     let mut buffer = Zeroizing::new(bytes[HEADER_LEN..].to_vec());
     cipher(key)?
         .decrypt_in_place(
@@ -253,16 +275,24 @@ pub(crate) fn open_with_key(
             &bytes[..HEADER_LEN],
             &mut *buffer,
         )
-        .map_err(|_| corrupt())?;
-    if header.version == FORMAT_V1 {
+        .map_err(|_| VaultError::InvalidPasswordOrCorrupted)?;
+    Ok(buffer)
+}
+
+/// Decodes an authenticated plaintext of format `version` (008: also reached by the
+/// `testkit` fuzz entry, so tests run exactly this production decoder).
+pub(crate) fn decode_plaintext(version: u16, plaintext: &[u8]) -> Result<Payload, VaultError> {
+    let corrupt = || VaultError::InvalidPasswordOrCorrupted;
+    if version == FORMAT_V1 {
         let (payload, rest) =
-            postcard::take_from_bytes::<PayloadV1>(&buffer).map_err(|_| corrupt())?;
+            postcard::take_from_bytes::<PayloadV1>(plaintext).map_err(|_| corrupt())?;
         if !rest.is_empty() {
             return Err(corrupt());
         }
         return payload.convert();
     }
-    let (payload, rest) = postcard::take_from_bytes::<PayloadV2>(&buffer).map_err(|_| corrupt())?;
+    let (payload, rest) =
+        postcard::take_from_bytes::<PayloadV2>(plaintext).map_err(|_| corrupt())?;
     if !rest.is_empty() {
         return Err(corrupt());
     }

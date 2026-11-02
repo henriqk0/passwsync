@@ -1,5 +1,8 @@
 //! Release-mode checks for SC-003, SC-004, SC-005. Run with
 //! `cargo test --release -p vault-core -- --ignored`.
+//!
+//! 008 (contracts/benchmarks.md): each measurement prints one `BUDGET` line (numbers only)
+//! before asserting; `scripts/bench.sh` collects them.
 
 use std::time::{Duration, Instant};
 
@@ -38,6 +41,25 @@ fn status_kib(field: &str) -> u64 {
     line.split_whitespace().nth(1).unwrap().parse().unwrap()
 }
 
+/// One `BUDGET` line (008 contracts/benchmarks.md); numbers only.
+fn budget(id: &str, value: u64, unit: &str, limit: u64, cmp: &str, source: &str) {
+    let verdict = match cmp {
+        "lt" if value < limit => "PASS",
+        "ge" if value >= limit => "PASS",
+        "info" => "INFO",
+        _ => "OVER",
+    };
+    println!(
+        "BUDGET id={id} value={value} unit={unit} limit={limit} cmp={cmp} source={source} class=measured verdict={verdict}"
+    );
+}
+
+fn unlock_ms(bytes: &[u8]) -> u64 {
+    let started = Instant::now();
+    Vault::unlock(bytes, pw(), device(), Box::new(FixedClock::new(1))).unwrap();
+    started.elapsed().as_millis() as u64
+}
+
 /// Restarts the kernel's peak-RSS counter (`VmHWM`) at the current RSS.
 fn reset_peak_rss() {
     std::fs::write("/proc/self/clear_refs", "5").expect("reset VmHWM");
@@ -72,6 +94,22 @@ fn list_and_search_over_10000_entries_take_under_100_ms() {
     let started = Instant::now();
     let found = vault.search("service 99").len();
     let search_time = started.elapsed();
+    budget(
+        "B-05",
+        list_time.as_millis() as u64,
+        "ms",
+        100,
+        "lt",
+        "001-SC-004",
+    );
+    budget(
+        "B-06",
+        search_time.as_millis() as u64,
+        "ms",
+        100,
+        "lt",
+        "001-SC-004",
+    );
 
     assert_eq!(listed, 10_000);
     assert!(found > 0);
@@ -97,6 +135,7 @@ fn ten_thousand_unlocked_entries_peak_under_64_mb() {
     let baseline = status_kib("VmRSS:");
     add_typical_entries(&mut vault, 10_000);
     let peak = status_kib("VmHWM:").saturating_sub(baseline);
+    budget("B-07", peak / 1024, "MB", 64, "lt", "001-SC-005");
     assert!(peak < 64 * 1024, "peak grew by {peak} KiB");
     std::hint::black_box(&vault);
 }
@@ -125,6 +164,48 @@ fn merging_a_10000_entry_copy_differing_by_one_entry_is_bounded() {
     let peak = status_kib("VmHWM:").saturating_sub(baseline);
     assert!(report.changed);
     eprintln!("merge of 10 000 entries: {elapsed:?}, peak +{peak} KiB");
+    // B-17 proxy: the extra peak of holding and merging the decrypted 10 000-entry copy (the
+    // memory part of 004 SC-008; the end-to-end sync in passwsyncd/tests/sync_perf.rs reports
+    // the duration only).
+    budget("B-17", peak / 1024, "MB", 64, "lt", "004-SC-008");
     assert!(elapsed < Duration::from_secs(2), "merge took {elapsed:?}");
     assert!(peak < 64 * 1024, "peak grew by {peak} KiB");
+}
+
+/// 008 B-01, B-02: median and worst of 9 unlocks at the default KDF (001 SC-003).
+#[test]
+#[ignore = "release-mode performance check"]
+fn unlock_default_median_and_worst() {
+    let bytes = create(KdfConfig::DEFAULT).seal().unwrap();
+    let mut times: Vec<u64> = (0..9).map(|_| unlock_ms(&bytes)).collect();
+    times.sort_unstable();
+    let (median, worst) = (times[4], times[8]);
+    budget("B-01", median, "ms", 2000, "lt", "001-SC-003");
+    budget("B-02", worst, "ms", 2000, "lt", "001-SC-003");
+    assert!(worst < 2000, "worst unlock {worst} ms");
+}
+
+/// 008 B-03: time per guess with a wrong password at the default KDF (at least 0.3 s).
+#[test]
+#[ignore = "release-mode performance check"]
+fn time_per_guess() {
+    let bytes = create(KdfConfig::DEFAULT).seal().unwrap();
+    let started = Instant::now();
+    let wrong = MasterPassword::new("not the right password".to_string());
+    assert!(Vault::unlock(&bytes, wrong, device(), Box::new(FixedClock::new(1))).is_err());
+    let ms = started.elapsed().as_millis() as u64;
+    budget("B-03", ms, "ms", 300, "ge", "001-SC-003");
+    assert!(ms >= 300, "a guess costs only {ms} ms");
+}
+
+/// 008 B-04: unlock at the service KDF cap (131,072 KiB); information only, no budget.
+#[test]
+#[ignore = "release-mode performance check"]
+fn unlock_at_service_cap() {
+    let cap = KdfConfig {
+        memory_kib: 131_072,
+        ..KdfConfig::DEFAULT
+    };
+    let bytes = create(cap).seal().unwrap();
+    budget("B-04", unlock_ms(&bytes), "ms", 0, "info", "008-FR-018");
 }

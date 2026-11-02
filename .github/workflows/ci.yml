@@ -1,0 +1,102 @@
+# passwsync CI (008 contracts/ci-workflow.md). Read-only: no secrets, no third-party actions
+# (no `uses:` at all), no publish, push, upload or cache step. Policy: scripts/check_workflow.py.
+#
+# CI-0 (maintainer, networked; specs/008-hardening-audit/quickstart.md): the image digest and
+# the Arch Linux Archive date below are fail-closed sentinels. Resolve both on a trusted
+# machine (`docker pull archlinux:base`, `docker inspect --format '{{index .RepoDigests 0}}'
+# archlinux:base`, matching date at https://archive.archlinux.org/repos/), write them here,
+# then `python3 scripts/check_workflow.py` must print PASS with no PENDING line. Until then
+# the jobs refuse to run (the all-zero digest cannot be pulled; the first step refuses an
+# unresolved snapshot).
+name: ci
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 4 * * 1"
+permissions:
+  contents: read
+defaults:
+  run:
+    shell: bash
+env:
+  ARCH_SNAPSHOT: "UNRESOLVED"
+  CARGO_DENY_VERSION: "0.20.2"
+  CARGO_AUDIT_VERSION: "0.22.2"
+  CARGO_TERM_COLOR: never
+jobs:
+  gate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    container:
+      image: archlinux@sha256:0000000000000000000000000000000000000000000000000000000000000000
+    steps:
+      - name: refuse unresolved pins
+        run: '[[ "$ARCH_SNAPSHOT" =~ ^[0-9]{4}/[0-9]{2}/[0-9]{2}$ ]] || { echo "refuse: ARCH_SNAPSHOT unresolved" >&2; exit 1; }'
+      - name: packages from dated snapshot
+        run: |
+          echo 'Server = https://archive.archlinux.org/repos/${ARCH_SNAPSHOT}/$repo/os/$arch' > /etc/pacman.d/mirrorlist
+          pacman -Syyuu --noconfirm base-devel git rust python binutils pkgconf openssl libxml2
+      - name: checkout (anonymous, no credentials stored)
+        run: |
+          git init -q -b ci .
+          git fetch --no-tags "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" "+refs/heads/main:refs/heads/main"
+          git fetch --depth=1 --no-tags "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" "$GITHUB_SHA"
+          git checkout -q FETCH_HEAD
+      - name: tools
+        run: cargo install --locked cargo-deny@"$CARGO_DENY_VERSION" cargo-audit@"$CARGO_AUDIT_VERSION"
+      - name: fetch inputs
+        run: scripts/gate.sh --fetch
+      - name: gate
+        run: scripts/gate.sh
+  android:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    container:
+      image: archlinux@sha256:0000000000000000000000000000000000000000000000000000000000000000
+    steps:
+      - name: refuse unresolved pins
+        run: '[[ "$ARCH_SNAPSHOT" =~ ^[0-9]{4}/[0-9]{2}/[0-9]{2}$ ]] || { echo "refuse: ARCH_SNAPSHOT unresolved" >&2; exit 1; }'
+      - name: packages from dated snapshot
+        run: |
+          echo 'Server = https://archive.archlinux.org/repos/${ARCH_SNAPSHOT}/$repo/os/$arch' > /etc/pacman.d/mirrorlist
+          pacman -Syyuu --noconfirm base-devel git rust python binutils pkgconf openssl libxml2
+      - name: checkout (anonymous, no credentials stored)
+        run: |
+          git init -q -b ci .
+          git fetch --no-tags "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" "+refs/heads/main:refs/heads/main"
+          git fetch --depth=1 --no-tags "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" "$GITHUB_SHA"
+          git checkout -q FETCH_HEAD
+      - name: tools
+        run: cargo install --locked cargo-deny@"$CARGO_DENY_VERSION" cargo-audit@"$CARGO_AUDIT_VERSION"
+      - name: fetch inputs
+        run: scripts/gate.sh --fetch
+      - name: android gate
+        run: android/verify.sh
+  packaging:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    container:
+      image: archlinux@sha256:0000000000000000000000000000000000000000000000000000000000000000
+    steps:
+      - name: refuse unresolved pins
+        run: '[[ "$ARCH_SNAPSHOT" =~ ^[0-9]{4}/[0-9]{2}/[0-9]{2}$ ]] || { echo "refuse: ARCH_SNAPSHOT unresolved" >&2; exit 1; }'
+      - name: packages from dated snapshot
+        run: |
+          echo 'Server = https://archive.archlinux.org/repos/${ARCH_SNAPSHOT}/$repo/os/$arch' > /etc/pacman.d/mirrorlist
+          pacman -Syyuu --noconfirm base-devel git rust python namcap systemd desktop-file-utils util-linux iproute2 libarchive shellcheck
+      - name: checkout (anonymous, no credentials stored)
+        run: |
+          git init -q -b ci .
+          git fetch --no-tags "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" "+refs/heads/main:refs/heads/main"
+          git fetch --depth=1 --no-tags "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" "$GITHUB_SHA"
+          git checkout -q FETCH_HEAD
+      - name: unprivileged builder (makepkg refuses root)
+        run: |
+          useradd -m builder
+          chown -R builder: .
+      - name: packaging gate
+        run: |
+          runuser -u builder -- packaging/verify.sh --fetch
+          runuser -u builder -- packaging/verify.sh

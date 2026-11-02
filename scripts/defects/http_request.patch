@@ -1,0 +1,13 @@
+--- a/crates/passwsyncd/src/http/request.rs
++++ b/crates/passwsyncd/src/http/request.rs
+@@ -124,9 +124,7 @@
+     let mut content_length = Vec::new();
+     for header in parsed.headers.iter() {
+         let name = header.name;
+-        if name.eq_ignore_ascii_case("transfer-encoding") {
+-            return Err(RequestError::TransferEncoding);
+-        } else if name.eq_ignore_ascii_case("host") {
++        if name.eq_ignore_ascii_case("host") {
+             host.push(header.value);
+         } else if name.eq_ignore_ascii_case("origin") {
+             origin.push(header.value);

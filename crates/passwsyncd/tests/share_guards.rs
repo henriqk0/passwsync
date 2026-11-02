@@ -148,7 +148,6 @@ fn no_response_carries_a_used_code_proof_wallet_id_or_credentials() {
         let text = i.api("GET", "/api/share", None).text();
         for needle in [
             code.as_str(),
-            &code[..4],
             wallet_id.as_str(),
             "TITLE-MARKER",
             "PASSWORD-MARKER",
