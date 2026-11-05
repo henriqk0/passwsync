@@ -116,6 +116,7 @@ consistent with the constitution and roadmap. No NEEDS CLARIFICATION remains.
   code as PSK (rejected: offline brute force); SAS / short authentication string compare
   only (rejected: spec mandates code entry with a PAKE).
 - **Security of failure**: guess probability per code 10^-8; at most 5 codes per 10 min.
+  **Amended by 009 (pending 009 implementation)**: at most 20 guesses per 10 min; 009 research R5.
 
 ## R5. Pairing code format and lifecycle
 
@@ -125,6 +126,9 @@ consistent with the constitution and roadmap. No NEEDS CLARIFICATION remains.
   `SPAKE_B` received (garbage before that just closes the connection without consuming),
   invalidated on any failure, rejection, expiry, service stop. Rate limit: 5 codes per
   sliding 10 min (monotonic clock). Held only in `Zeroizing` memory; never logged or stored.
+  **Amended by 009 (pending 009 implementation)**: the consume point above stays, and must not move later (009
+  research R3). The implementation breaks the "garbage does not consume" rule, because a Hello
+  alone also ends the code; 009 research R4 fixes that. Rate limit: 009 research R5.
   B waits for the acceptance up to `seconds_left + 10 s`; that wait is the person's
   decision, not a protocol step, so the 10 s step timeout (FR-030) applies to every other
   read.
@@ -146,6 +150,8 @@ consistent with the constitution and roadmap. No NEEDS CLARIFICATION remains.
     `overflow`). Paired peers' last address is tracked in the pin record, not the 64 list,
     so a flood cannot hide paired devices.
   - A received announcement from a paired, unconnected peer triggers one dial attempt.
+    **Amended by 009 (pending 009 implementation)**: it feeds a bounded per-peer table served by a separate dial
+    path, and cannot displace the dial to the last known address; 009 research R6, R7.
 - **Rationale**: Broadcast needs no group membership, works on every LAN where Syncthing
   local discovery works, and is one `std::net::UdpSocket`. Announcements are untrusted
   hints only (FR-014).
@@ -210,8 +216,11 @@ consistent with the constitution and roadmap. No NEEDS CLARIFICATION remains.
   - Channel timers: send `Keepalive` if nothing sent for 60 s; close if nothing received for
     150 s (peer shown offline < 3 min, SC-005). Dial backoff for unreachable pins: 30 s,
     doubling to 300 s, reset by an announcement from that peer.
+    **Amended by 009 (pending 009 implementation)**: an announcement no longer resets it, and may only wake the dial
+    to the last known address no sooner than the minimum backoff; 009 research R6.
   - Duplicate channels (FR-029): both sides may dial; after authentication both keep the
     channel whose dialer has the smaller device ID and close the other.
+    **Amended by 009 (pending 009 implementation)**: a higher channel version wins first; 009 research R10.
   - Revocation: registry removes and persists the pin, then `shutdown(Both)` on the stored
     stream clone, closing within 1 s (SC-005).
   - Stop: listener and sockets shut down via `rustix::net::shutdown`; threads joined.

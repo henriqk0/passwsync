@@ -15,6 +15,9 @@ Rationale: [research.md](../research.md) R3–R8. Integers big-endian (as 003).
   lower the maximum by one (v3 → v2 → v1, the v2 → v1 step being the 004 rule) and redial at
   once. A lowered maximum is raised again after 24 h or a restart. UI: peer below v3 → "this
   device does not support sharing"; below v2 → also the 004 "sync unsupported by peer".
+  **Amended by 009 (pending 009 implementation)**: each dial starts at v3, the fallback stays inside that dial and nothing is
+  remembered; a channel below v3 is retried every 6 h. See
+  `specs/009-lan-dos-hardening/contracts/peer-behaviour.md`.
 - Valid transport types: v1 = 003 set; v2 = v1 + 0x20, 0x21; v3 = v2 + 0x30, 0x31. Anything
   else → protocol error (close), as in 003.
 

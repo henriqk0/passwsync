@@ -339,6 +339,10 @@ A as no longer reachable (refused by peer).
 - **FR-021**: Any failed pairing attempt (wrong code, aborted exchange, transcript mismatch,
   timeout) MUST invalidate the code on A; A MUST accept at most one pairing attempt per code
   and at most 5 pairing codes per 10 minutes.
+  **Amended by 009 (pending 009 implementation)**: an aborted exchange invalidates the code only once a
+  well-formed key message was answered; a Hello alone or a malformed key message does not. The
+  limit becomes 5 untried codes and 20 codes in total per 10 minutes. One guess per code is
+  unchanged. See 009 FR-008 to FR-011.
 - **FR-022**: When B pairs via the QR code, B MUST refuse to complete unless A's proven
   identity matches the device ID in the QR code.
 - **FR-022a**: After the code exchange succeeds, A MUST show B's name and fingerprint and

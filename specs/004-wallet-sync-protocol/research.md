@@ -217,6 +217,9 @@ directory.
   version is bound into the Noise prologue, so it cannot be altered without failing the
   handshake; an active attacker can only force v1, i.e. "no sync", which is no worse than
   dropping traffic (no wallet data ever flows on v1).
+  **Amended by 009 (pending 009 implementation)**: this rationale is wrong. The review of 2026-11-05 forced v1 with one
+  datagram and one closed connection, with no on-path position, and the effect outlasted the
+  attacker by up to 24 h. The memory is removed; 009 research R1.
 - **Alternatives**: capability field in `ChannelHello` (v1 peers close on trailing bytes);
   new Noise payload in msg2 (same problem); separate TCP port for sync (more sockets, a second
   handshake, duplicates the pin logic).

@@ -106,3 +106,6 @@ earlier → `Failed`, nothing pinned.
 
 announce 30 s · nearby expiry 90 s · step timeout 10 s · keepalive 60 s · idle close
 150 s · code validity 300 s · dial backoff 30 → 300 s · interface re-scan 30 s.
+
+**Amended by 009 (pending 009 implementation)**: the pairing session starts at the key message, not the Hello, and each peer
+gets separate dial paths and a hint table. See `specs/009-lan-dos-hardening/data-model.md`.

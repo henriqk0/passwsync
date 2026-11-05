@@ -144,6 +144,7 @@ Severity combines impact and likelihood inside the attacker model:
 | T-B04-4 | I | the stable device id is visible to everyone on the LAN | accepted in 003 | RR-03 | Residual (RR-03) |
 | T-B04-5 | D | announcement floods fill the nearby list | at most 64 unpaired nearby devices, expiry, per-reason drop counters | crates/passwsyncd/tests/flood_network.rs | Mitigated |
 | T-B04-6 | E | a public address is used to reach the device | address policy: LAN ranges only | crates/device-link/tests/policy.rs | Mitigated |
+| T-B04-7 | D | an announcement flood naming a paired id keeps the only dial on an attacker address, so disconnected devices never connect | pending 009: separate dial paths and a bounded hint table (009 FR-014, 009 FR-015, 009 FR-016); no mitigation in the code yet | F-005, RR-22 | Residual (RR-22) |
 
 ### B-05 Pairing
 
@@ -153,7 +154,7 @@ Severity combines impact and likelihood inside the attacker model:
 | T-B05-2 | T | a pairing message is modified | any mutated message ends the attempt failed with no pin and no session; the code is unused or failed | crates/hardening/tests/fuzz_pairing_initiator.rs, crates/hardening/tests/fuzz_pairing_joiner.rs | Mitigated |
 | T-B05-3 | R | a person disputes having accepted a pairing | N/A: acceptance is a local decision on the person's own device; pins record the pairing time | 003 FR-022b | N/A |
 | T-B05-4 | I | the code is guessed or brute-forced | one attempt per code, 300 s validity, at most 5 codes per 600 s | crates/device-link/tests/code.rs, 003 FR-021 | Mitigated |
-| T-B05-5 | D | an attacker blocks pairing by holding the single slot | step timeouts (10 s), one exchange at a time, code replacement | crates/device-link/tests/pairing_failures.rs | Mitigated |
+| T-B05-5 | D | an attacker blocks pairing by holding the single slot or burning the shown code | step timeouts (10 s), one exchange at a time, code replacement; these do not stop the burn, since one Hello ends the code and five lock pairing for 10 minutes (F-004). Pending 009: a Hello takes no state, and a two-tier code limit (009 FR-008, 009 FR-011). A guess needs no knowledge of the code, so a burn stays possible | crates/device-link/tests/pairing_failures.rs, F-004, RR-21 | Residual (RR-21) |
 | T-B05-6 | E | a pin is added without the person's acceptance | pins are written only after the person accepts and both sides commit (two-phase) | crates/device-link/tests/pairing_ack_loss.rs, crates/hardening/tests/fuzz_pairing_joiner.rs | Mitigated |
 | T-B05-7 | I | the device private key is protected by file permissions only | accepted in 003 | RR-02 | Residual (RR-02) |
 
@@ -167,6 +168,7 @@ Severity combines impact and likelihood inside the attacker model:
 | T-B06-4 | I | traffic analysis or copies of keys inside the unaudited Noise and SPAKE2 crates | exact-pinned crates, no primitive implemented here; key copies inside the libraries are not wiped | RR-01 | Residual (RR-01) |
 | T-B06-5 | D | a peer floods frames | frames at most 1024 bytes, per-peer limits, keepalive timeouts | crates/hardening/tests/fuzz_frame.rs, crates/passwsyncd/tests/flood_network.rs | Mitigated |
 | T-B06-6 | E | a v1 peer is tricked into sync or share messages | Hello version bound into the Noise prologue; decoders per version reject later payload types | crates/hardening/tests/fuzz_hello.rs, crates/hardening/tests/fuzz_channel_payload.rs | Mitigated |
+| T-B06-7 | D | an unpaired host forces a lower channel version, turning sync and sharing off for 24 h after it leaves | pending 009: fallback inside one dial with no memory, retry at v3 every 6 h (009 FR-001, 009 FR-002, 009 FR-006); no mitigation in the code yet. Version integrity of a running channel is unaffected (T-B06-6) | F-003, RR-20 | Residual (RR-20) |
 
 ### B-07 Wallet sync
 
@@ -264,6 +266,9 @@ moves the file into the model and needs a fuzz target and a boundary row first.
 | RR-17 | Advisory RUSTSEC-2026-0374 (basic-toml unmaintained, via askama in the binding generator) ignored | tools/uniffi-bindgen/deny.toml | build-time generator only, never shipped | Low | maintainer | UniFFI drops basic-toml | Accepted |
 | RR-18 | The hosted runner VM image (ubuntu-24.04 label) is not pinnable; the container image digest and the Arch Linux Archive date are fail-closed sentinels until resolved | specs/008-hardening-audit/research.md (R15) | GitHub offers no digest pin for runner images; the container isolates build steps from most of it; sentinels keep CI from running unpinned | Medium | maintainer | CI-0 resolved (digest and date written) and a pinnable runner image is available | Open |
 | RR-19 | Duplicate crate versions (cargo-deny multiple-versions stays a warning); the gate prints the duplicate count | specs/008-hardening-audit/research.md (R18) | duplicates come from upstream version splits (getrandom, syn); denying them needs dependency changes forbidden by 008 | Low | maintainer | upstream crates converge; then multiple-versions = "deny" | Accepted |
+| RR-20 | An unpaired LAN host can force a channel below v3 for up to 24 h. Pending 009; after it, an on-path attacker can still force a lower version until the next 6 h retry | specs/009-lan-dos-hardening/spec.md | availability only: no wallet data flows on a lower channel, but changed passwords stop propagating | Medium | maintainer | 009 implemented; the on-path remainder then needs an authenticated version statement | Open |
+| RR-21 | An attacker on the LAN can burn every shown pairing code. Pending 009, five burns lock pairing for 10 minutes; after it, the burn stays and the lockout goes | specs/009-lan-dos-hardening/spec.md | inherent to one guess per code: sending a guess needs no knowledge of the code | Medium | maintainer | 009 implemented; the burn itself needs a pairing design that does not spend a guess before checking it | Open |
+| RR-22 | An announcement flood keeps disconnected paired devices apart. Pending 009; after it, forged sources can only delay a device that also moved | specs/009-lan-dos-hardening/spec.md | availability only, ends with the attack; an established channel is unaffected | Medium | maintainer | 009 implemented; the remainder needs authenticated discovery | Open |
 
 ## 9. Audit findings
 
@@ -275,6 +280,14 @@ because `crates/passwsyncd/tests` stays unchanged in 008 (gate rule of `android/
 |----|--------|---------|----------|--------|---------------|
 | F-001 | http_request | `read_request` accepted a bare LF as a line end in the request head (httparse is lenient); FR-016 requires CRLF only. Found at seed 0x505753594e430008, iteration 3439. Fixed by rejecting any LF not preceded by CR in the head (rejects invalid input only) | Low | Fixed | crates/hardening/tests/regress_008.rs::f_001_bare_lf_in_the_request_head_is_rejected |
 | F-002 | wallet_payload | review item (research R20 item 3): postcard accepts a non-minimal varint inside the authenticated payload; the value re-encodes canonically (rule P holds). Not fixed: rejecting it needs a stricter decoder of the file format, and only a holder of the key can produce such a payload | Low | Open | vault-core maintainer |
+| F-003 | peer dialing | security review 2026-11-05: an unpaired host forces a lower channel version with one announcement and closed connections; sync and sharing stay off up to 24 h after it leaves, with a misleading status. Measured about 60 ms, 7 TCP accepts. Spec 004 research R7 accepted this on a wrong rationale. Pending 009 | Medium | Open | maintainer (009) |
+| F-004 | pairing | security review 2026-11-05: one pairing Hello ends the shown code with no guess, and the correct code is then refused; five rounds (about 200 ms) block pairing for 10 minutes. Pending 009 | Medium | Open | maintainer (009) |
+| F-005 | discovery | security review 2026-11-05: announcements have no bound, reset the backoff and win the single dial slot; disconnected devices never connected during a flood of about 950 datagrams/s in 3 of 3 runs. Pending 009 | Medium | Open | maintainer (009) |
+| F-006 | wallet creation | security review 2026-11-05: the master password rule is length only, so `aaaaaaaaaaaa` is accepted; Argon2id is then the only barrier for a stolen file or a copy on a paired device. No unlock throttling. Not in 009 | Medium | Open | maintainer |
+| F-007 | listener | security review 2026-11-05: the limit of 16 unauthenticated connections is global, so one host can fill it and delay real dials (first success after 1.5 to 9.2 s at a 1.5 s step timeout). Not in 009 | Low | Open | maintainer |
+| F-008 | discovery | security review 2026-11-05: a device dials back only for ids it has paired with, so announcing an id reveals who is paired with whom; wider than RR-03. Not in 009 | Low | Open | maintainer |
+| F-009 | listener, interfaces | security review 2026-11-05 (code reading, not exploited): TCP accepts any private address with no subnet check, and desktop uses Docker and VPN interfaces by default. Not in 009 | Low | Open | maintainer |
+| F-010 | loopback service | security review 2026-11-05 (code reading, not exploited): nothing authenticates the service to the browser, so another OS user holding the port while the service is down can collect a master password from a stale tab. T-B10-1 says the launcher checks the peer UID, but it only validates the launch file. Not in 009 | Low | Open | maintainer |
 
 Review items of research R20 without a finding: (1) the 8 MiB `Content-Length` buffer per
 request is within the 002 bound; worst case four workers hold 32 MiB of untouched address space
@@ -296,3 +309,7 @@ the reference phone (D-1..D-4).
 - 2026-11-02 (008): fuzz target 17 `ffi_args` added (T-B09-6); benchmark results recorded in
   section 9 (no finding); `deny.toml` advisory keys tightened without new ignores (no new
   register row).
+- 2026-11-05 (009 specification): findings F-003 to F-010 of the security review recorded, all Open.
+  T-B05-5 corrected from Mitigated to Residual, since a pairing code could be burned; T-B04-7 and
+  T-B06-7 added; register RR-20 to RR-22 added. Fixes for F-003 to F-005 are specified in
+  `specs/009-lan-dos-hardening/` and pending 009 implementation, so no status here claims them yet.

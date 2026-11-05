@@ -11,6 +11,8 @@ Rationale: [research.md](../research.md) R7–R11. Integers big-endian (as 003).
   stays `PWSC || 0x01 || 0x02`.
 - Dialer: dials v2; if closed before Noise msg2 → peer `legacy`, redial v1 at once; retry v2
   after 24 h or restart. UI peer status: "sync unsupported by peer".
+  **Amended by 009 (pending 009 implementation)**: the fallback stays inside one dial and nothing is remembered; the status
+  follows the channel that is up. See `specs/009-lan-dos-hardening/contracts/peer-behaviour.md`.
 - On a v2 channel the valid transport types are the 003 set plus 0x20 and 0x21. On v1 they
   are a protocol error (close), as in 003.
 

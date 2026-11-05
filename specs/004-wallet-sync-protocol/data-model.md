@@ -126,6 +126,7 @@ contracts/http-api-sync.md.
 
 `next_safety_at`, `backoff: {failures, until}`, `dirty_since: Option<mono>` (quiet period),
 `sync_now: bool`, `legacy_until: Option<mono>` (v1-only peer).
+**Amended by 009 (pending 009 implementation)**: no version memory outlives a channel; 009 research R1.
 
 ## device-link (additive)
 

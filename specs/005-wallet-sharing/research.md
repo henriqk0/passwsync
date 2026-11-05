@@ -75,6 +75,8 @@ changed by this plan.
   negotiation point an older peer rejects before any crypto, and the version is bound into the
   Noise prologue, so an active attacker can only downgrade to "no sharing", never alter traffic.
   Same reasoning as 004 R7; no new mechanism.
+  **Amended by 009 (pending 009 implementation)**: that reasoning is wrong for the same reason, and the per-peer maximum
+  version is removed; 009 research R1.
 - **Alternatives**: share control types inside 004 `SyncCtl` (v2 peers close on unknown ctype);
   capability bit in `ChannelHello` (v1/v2 close on trailing bytes); separate TCP port (second
   handshake and pin logic, extra socket).
